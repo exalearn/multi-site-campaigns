@@ -25,5 +25,13 @@ TBD
 
 ## Installation
 
-TBD. There will be an environment file
+We provide different environment for different workflow engines.
+
+- _FuncX_: `environment-funcx.yml`
+
+Install them using Anaconda
+
+```bash
+conda env create --file <path to .yml> --force
+```
 
