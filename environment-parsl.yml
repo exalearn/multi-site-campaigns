@@ -19,7 +19,6 @@ dependencies:
   - qcengine==0.23.0
   - pyyaml < 6
   - rdkit==2019.09.3
-  - tensorflow-mkl==2.4.1
   - py-cpuinfo<6
   - msgpack-python==1.*
   - xtb-python
@@ -32,5 +31,6 @@ dependencies:
       - ase==3.22.1
       - git+https://github.com/wardlt/parsl.git@pin_cuda
       - python-git-info
+      - tensorflow-cpu==2.8
       - flatten-dict
       - colmena==0.3.*

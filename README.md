@@ -15,7 +15,7 @@ We experiment a few different aspects of multi-site campaigns:
 
 Our study includes two major components
 
-### Example application: Molecular design
+### Example Application: Molecular design
 
 TBD
 
@@ -30,9 +30,13 @@ We provide different environment for different workflow engines.
 - _FuncX_: `environment-funcx.yml`
 - _Parsl_: `environment-parsl.yml`
 
+You may need to modify the environments to install versions of Tensorflow optimized for your hardware.
+By default, we install the `tensorflow-cpu` as we do not assume CUDA is available on a system.
+
+- _NVIDIA GPUs_: Change the `tensorflow-cpu` to `tensorflow`.
+
 Install them using Anaconda
 
 ```bash
 conda env create --file <path to .yml> --force
 ```
-
