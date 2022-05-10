@@ -179,7 +179,7 @@ class Thinker(BaseThinker):
                 smiles = Chem.MolToSmiles(mol)
             except RuntimeError:
                 import pdb; pdb.set_trace()
-                self.logger.warning(f'Parse failed for {inchi}')
+                self.logger.error(f'Parse failed for {inchi}')
                 raise
                 
                 
@@ -475,7 +475,7 @@ if __name__ == '__main__':
     group.add_argument('--simulate-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus'], help='ProxyStore backend to use with "simulate" topic')
     group.add_argument('--infer-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus'], help='ProxyStore backend to use with "infer" topic')
     group.add_argument('--train-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus'], help='ProxyStore backend to use with "train" topic')
-    group.add_argument('--ps-threshold', default=500000, type=int, help='Min size in bytes for transferring objects via ProxyStore')
+    group.add_argument('--ps-threshold', default=10000, type=int, help='Min size in bytes for transferring objects via ProxyStore')
     group.add_argument('--ps-file-dir', default=None, help='Filesystem directory to use with the ProxyStore file backend')
     group.add_argument('--ps-globus-config', default=None, help='Globus Endpoint config file to use with the ProxyStore Globus backend')
     
