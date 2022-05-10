@@ -1,9 +1,11 @@
 from threading import Event, Lock
 from typing import Dict, List, Tuple
 from functools import partial, update_wrapper
+from collections import defaultdict
 from pathlib import Path
 from datetime import datetime
 from queue import Queue
+from time import sleep
 import argparse
 import logging
 import hashlib
@@ -16,7 +18,6 @@ import pandas as pd
 import tensorflow as tf
 import proxystore as ps
 from rdkit import Chem
-from funcx import FuncXClient
 from tqdm import tqdm
 from colmena.models import Result
 from colmena.redis.queue import ClientQueues, make_queue_pairs
@@ -135,7 +136,7 @@ class Thinker(BaseThinker):
             keys = [f'search-{mid}' for mid in range(len(inference_msgs))]
             self.inference_proxies = ps.store.get_store(self.ps_names['infer']).proxy_batch(inference_msgs, keys=keys, strict=True)
         else:
-            self.inference_proxies = self.inference_chunks  # No proxies, just send the message as-is
+            self.inference_proxies = inference_msgs  # No proxies, just send the message as-is
 
         # Inter-thread communication stuff
         self.start_inference = Event()  # Mark that inference should start
@@ -172,8 +173,15 @@ class Thinker(BaseThinker):
         # Submit the next task
         with self.task_queue_lock:
             inchi, info = self.task_queue.pop(0)
-            mol = Chem.MolFromInchi(inchi)
-            smiles = Chem.MolToSmiles(mol)
+            try:
+                mol = Chem.MolFromInchi(inchi)
+                smiles = Chem.MolToSmiles(mol)
+            except RuntimeError:
+                import pdb; pdb.set_trace()
+                self.logger.warning(f'Parse failed for {inchi}')
+                raise
+                
+                
             self.logger.info(f'Submitted {smiles} to simulate with NWChem. Run score: {info["ucb"]}')
             self.already_searched.add(inchi)
             self.queues.send_inputs(smiles, task_info=info,
@@ -316,9 +324,19 @@ class Thinker(BaseThinker):
         # Make a folder for the models
         model_folder = self.output_dir.joinpath('models')
         model_folder.mkdir(exist_ok=True)
+        
+        # Get the name of the proxy store
+        ps_name = self.ps_names['infer']
             
         # Submit the chunks to the workflow engine
+        first = True
         for mid in range(len(self.mpnns)):
+            # Hack: Submitting tasks too quickly during inference leads to buffer problems w/o proxystore
+            if not first and ps_name is None:
+                self.logger.info('Waiting to allow last set of tasks to send to worker')
+                sleep(45)  # Wait a minute for the last tasks to make it out of the buffer
+            first = False
+            
             # Get a model that is ready for inference
             model = self.ready_models.get()
             
@@ -326,8 +344,8 @@ class Thinker(BaseThinker):
             model_msg = MPNNMessage(model)
             
             # Proxy it once, to be used by all inference tasks
-            if self.ps_names['infer'] is not None:
-                model_msg_proxy = ps.store.get_store(self.ps_names['infer']).proxy(model_msg, key=f'model-{mid}-{self.inference_batch}')
+            if ps_name is not None:
+                model_msg_proxy = ps.store.get_store(ps_name).proxy(model_msg, key=f'model-{mid}-{self.inference_batch}')
             else:
                 model_msg_proxy = model_msg  # No proxy
             
@@ -437,8 +455,8 @@ if __name__ == '__main__':
     group.add_argument('--mpnn-model-files', nargs="+", help='Path to the MPNN h5 files', required=True)
     group.add_argument('--training-set', help='Path to the molecules used to train the initial models', required=True)
     group.add_argument('--search-space', help='Path to molecules to be screened', required=True)
-    group.add_argument("--search-size", default=1000, type=int, help="Number of new molecules to evaluate during this search")
-    group.add_argument('--retrain-frequency', default=8, type=int, help="Number of completed computations that will trigger a retraining")
+    group.add_argument("--search-size", default=500, type=int, help="Number of new molecules to evaluate during this search")
+    group.add_argument('--retrain-frequency', default=1, type=int, help="Number of completed computations that will trigger a retraining")
     group.add_argument("--beta", default=1, help="Degree of exploration for active learning. This is the beta from the UCB acquistion function", type=float)
     group.add_argument("--pause-during-update", action='store_true', help='Whether to stop running simulations while updating task list')
 
@@ -515,7 +533,10 @@ if __name__ == '__main__':
             raise ValueError('Must specify --ps-globus-config to use the Globus ProxyStore backend')
         endpoints = ps.store.globus.GlobusEndpoints.from_json(args.ps_globus_config)
         ps.store.init_store(ps.store.STORES.GLOBUS, name='globus', endpoints=endpoints)
-    ps_names = {'simulate': args.simulate_ps_backend, 'infer': args.infer_ps_backend, 'train': args.train_ps_backend}
+    if args.no_proxystore:
+        ps_names = defaultdict(lambda: None)  # No proxystore for no one
+    else:
+        ps_names = {'simulate': args.simulate_ps_backend, 'infer': args.infer_ps_backend, 'train': args.train_ps_backend}
 
     # Connect to the redis server
     client_queues, server_queues = make_queue_pairs(args.redishost,
@@ -525,7 +546,7 @@ if __name__ == '__main__':
                                                     serialization_method='pickle',
                                                     keep_inputs=True,
                                                     proxystore_name=None if args.no_proxystore else ps_names,
-                                                    proxystore_threshold=Noe if args.no_proxystore else args.ps_threshold)
+                                                    proxystore_threshold=None if args.no_proxystore else args.ps_threshold)
 
     # Apply wrappers to functions to affix static settings
     #  Update wrapper changes the __name__ field, which is used by the Method Server
@@ -556,6 +577,8 @@ if __name__ == '__main__':
         
     else:
         from colmena.task_server.funcx import FuncXTaskServer
+        from funcx import FuncXClient
+        
         fx_client = FuncXClient()
         task_map = dict((f, args.ml_endpoint) for f in [my_evaluate_mpnn, my_update_mpnn, my_retrain_mpnn])
         task_map[my_run_simulation] = args.qc_endpoint

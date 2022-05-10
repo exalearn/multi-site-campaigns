@@ -22,12 +22,12 @@ def theta_debug_and_lambda(log_dir: str) -> Config:
                 max_workers=1,
                 address=address_by_hostname(),
                 provider=CobaltProvider(
-                    queue='debug-cache-quad',
+                    queue='debug-flat-quad',  # Flat has lower utilization, even though xTB is (slightly) faster on cache
                     account='CSC249ADCD08',
                     launcher=AprunLauncher(overrides="-d 256 --cc depth -j 4"),
                     worker_init='''
 module load miniconda-3
-source activate /lus/theta-fs0/projects/CSC249ADCD08/edw/env
+source activate /lus/theta-fs0/projects/CSC249ADCD08/multi-site-campaigns/env-parsl
 which python
 ''',
                     nodes_per_block=8,
@@ -43,12 +43,12 @@ which python
                 label="v100",
                 available_accelerators=8,
                 worker_ports=(54928, 54875),  # Hard coded to match up with SSH tunnels
-                worker_logdir_root='/lambda_stor/homes/lward/electrolyte-design/parsl-run/logs',
+                worker_logdir_root='/lambda_stor/homes/lward/multi-site-campaigns/parsl-run/logs',
                 provider=AdHocProvider(
-                    channels=[SSHChannel('lambda1.cels.anl.gov', script_dir='/lambda_stor/homes/lward/electrolyte-design/parsl-run')],
+                    channels=[SSHChannel('lambda1.cels.anl.gov', script_dir='/lambda_stor/homes/lward/multi-site-campaigns/parsl-run')],
                     worker_init='''
 # Activate conda environment
-source /homes/lward/miniconda3/bin/activate /lambda_stor/homes/lward/electrolyte-design/env
+source /homes/lward/miniconda3/bin/activate /lambda_stor/homes/lward/multi-site-campaigns/env-parsl
 which python
 ''',
                 ),
