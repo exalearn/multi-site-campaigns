@@ -7,7 +7,6 @@ from queue import Queue
 import argparse
 import logging
 import hashlib
-import parsl
 import json
 import sys
 import os
@@ -19,8 +18,6 @@ import proxystore as ps
 from rdkit import Chem
 from funcx import FuncXClient
 from tqdm import tqdm
-from colmena.task_server import ParslTaskServer
-from colmena.task_server.funcx import FuncXTaskServer
 from colmena.models import Result
 from colmena.redis.queue import ClientQueues, make_queue_pairs
 from colmena.thinker import BaseThinker, result_processor, event_responder, task_submitter
@@ -137,6 +134,8 @@ class Thinker(BaseThinker):
         if self.ps_names['infer'] is not None:
             keys = [f'search-{mid}' for mid in range(len(inference_msgs))]
             self.inference_proxies = ps.store.get_store(self.ps_names['infer']).proxy_batch(inference_msgs, keys=keys, strict=True)
+        else:
+            self.inference_proxies = self.inference_chunks  # No proxies, just send the message as-is
 
         # Inter-thread communication stuff
         self.start_inference = Event()  # Mark that inference should start
@@ -327,9 +326,12 @@ class Thinker(BaseThinker):
             model_msg = MPNNMessage(model)
             
             # Proxy it once, to be used by all inference tasks
-            model_msg_proxy = ps.store.get_store(self.ps_names['infer']).proxy(model_msg, key=f'model-{mid}-{self.inference_batch}')
+            if self.ps_names['infer'] is not None:
+                model_msg_proxy = ps.store.get_store(self.ps_names['infer']).proxy(model_msg, key=f'model-{mid}-{self.inference_batch}')
+            else:
+                model_msg_proxy = model_msg  # No proxy
             
-            # Run inference with all segements available
+            # Run inference with all segments available
             for cid, (chunk, chunk_msg) in enumerate(zip(self.inference_chunks, self.inference_proxies)):
                 self.queues.send_inputs([model_msg_proxy], chunk_msg,
                                         topic='infer', method='evaluate_mpnn',
@@ -431,8 +433,7 @@ if __name__ == '__main__':
 
     # Problem configuration
     group = parser.add_argument_group(title='Problem Definition', description='Defining the search space, models and optimizers-related settings')
-    group.add_argument('--qc-specification', default='xtb', choices=['xtb', 'small_basis'],
-                       help='Which level of quantum chemistry to run')
+    group.add_argument('--qc-specification', default='xtb', choices=['xtb'], help='Which level of quantum chemistry to run')
     group.add_argument('--mpnn-model-files', nargs="+", help='Path to the MPNN h5 files', required=True)
     group.add_argument('--training-set', help='Path to the molecules used to train the initial models', required=True)
     group.add_argument('--search-space', help='Path to molecules to be screened', required=True)
@@ -449,6 +450,7 @@ if __name__ == '__main__':
 
     # Parameters related to ProxyStore
     group = parser.add_argument_group(title='ProxyStore', description='Settings related to ProxyStore')
+    group.add_argument('--no-proxystore', action='store_true', help='Turn off ProxyStore')
     group.add_argument('--simulate-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus'], help='ProxyStore backend to use with "simulate" topic')
     group.add_argument('--infer-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus'], help='ProxyStore backend to use with "infer" topic')
     group.add_argument('--train-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus'], help='ProxyStore backend to use with "train" topic')
@@ -522,8 +524,8 @@ if __name__ == '__main__':
                                                     topics=['simulate', 'infer', 'train'],
                                                     serialization_method='pickle',
                                                     keep_inputs=True,
-                                                    proxystore_name=ps_names,
-                                                    proxystore_threshold=args.ps_threshold)
+                                                    proxystore_name=None if args.no_proxystore else ps_names,
+                                                    proxystore_threshold=Noe if args.no_proxystore else args.ps_threshold)
 
     # Apply wrappers to functions to affix static settings
     #  Update wrapper changes the __name__ field, which is used by the Method Server
@@ -541,8 +543,9 @@ if __name__ == '__main__':
 
     # Create the task servers
     if args.use_parsl:
+        from colmena.task_server import ParslTaskServer
         # Create the resource configuration
-        config = theta_debug_and_lambda(None)
+        config = theta_debug_and_lambda(out_dir)
         
         # Assign tasks to the appropriate executor
         methods = [(f, {'executors': ['v100']}) for f in [my_evaluate_mpnn, my_update_mpnn, my_retrain_mpnn]]
@@ -552,6 +555,7 @@ if __name__ == '__main__':
         doer = ParslTaskServer(methods, server_queues, config)
         
     else:
+        from colmena.task_server.funcx import FuncXTaskServer
         fx_client = FuncXClient()
         task_map = dict((f, args.ml_endpoint) for f in [my_evaluate_mpnn, my_update_mpnn, my_retrain_mpnn])
         task_map[my_run_simulation] = args.qc_endpoint
