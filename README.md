@@ -28,6 +28,7 @@ TBD
 We provide different environment for different workflow engines.
 
 - _FuncX_: `environment-funcx.yml`
+- _Parsl_: `environment-parsl.yml`
 
 Install them using Anaconda
 
