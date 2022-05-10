@@ -367,14 +367,11 @@ class MoleculeData(BaseModel):
 
         # Get the specification
         if spec_name is None:
-            spec_name, solvent = infer_specification_from_result(relax_record, client)
+            spec_name, solvent = infer_specification_from_result(relax_record)
             assert solvent is None, "We do not yet support relaxation in solvents."
 
         # Get the geometry
-        if isinstance(relax_record, OptimizationRecord):
-            geom = relax_record.get_final_molecule()
-        else:
-            geom = relax_record.final_molecule
+        geom = relax_record.final_molecule
         xyz = geom.to_string("xyz")
         xyz_hash = get_hash(geom)
 
@@ -398,10 +395,7 @@ class MoleculeData(BaseModel):
 
         # Check if the beginning matches another geometry,
         #   which allows us to define the total energy for that structure
-        if isinstance(relax_record, OptimizationRecord):
-            geom = relax_record.get_initial_molecule()
-        else:
-            geom = relax_record.initial_molecule
+        geom = relax_record.initial_molecule
 
         try:
             init_level, init_state = self.match_geometry(geom)
@@ -424,7 +418,6 @@ class MoleculeData(BaseModel):
             spec_name: Specification used to compute this structure. If none provided, it is inferred from the
                 specification in the result
             solvent_name: Name of the solvent, if known
-            client: Connection to QCFractal server. Needed for result records
         """
 
         # Get the geometry
@@ -439,7 +432,7 @@ class MoleculeData(BaseModel):
 
         # Infer the method, if needed
         if spec_name is None:
-            spec_name, solvent_name = infer_specification_from_result(record, client)
+            spec_name, solvent_name = infer_specification_from_result(record)
 
         # Get the oxidation state of the molecule used in this computation
         my_state = OxidationState.from_charge(round(geom.molecular_charge), self.identifier['smiles'])
