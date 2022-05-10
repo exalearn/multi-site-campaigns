@@ -5,6 +5,7 @@ from parsl.launchers import AprunLauncher
 from parsl.channels import SSHChannel
 from parsl import Config
 
+
 def theta_debug_and_lambda(log_dir: str) -> Config:
     """Configuration where simulation tasks run on Theta and ML tasks run on Lambda.
 
@@ -15,6 +16,7 @@ def theta_debug_and_lambda(log_dir: str) -> Config:
     """
     # Set a Theta config for using the KNL nodes with a single worker per node
     config = Config(
+        run_dir=log_dir,
         retries=1,
         executors=[
             HighThroughputExecutor(

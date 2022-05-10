@@ -1,4 +1,4 @@
-from threading import Event, Lock
+from threading import Event, Lock, Semaphore
 from typing import Dict, List, Tuple
 from functools import partial, update_wrapper
 from collections import defaultdict
@@ -149,6 +149,7 @@ class Thinker(BaseThinker):
         self.ready_models = Queue()
         self.num_training_complete = 0  # Tracks when we are done with training all models
         self.inference_batch = 0
+        self.inference_limiter = Semaphore(32)  # Maximum number of inference tasks to send at once (only used with out proxystore)
 
         # Start with inference. Push all models immediately to the queue after triggering inference engine
         self.start_inference.set()
@@ -329,13 +330,7 @@ class Thinker(BaseThinker):
         ps_name = self.ps_names['infer']
             
         # Submit the chunks to the workflow engine
-        first = True
         for mid in range(len(self.mpnns)):
-            # Hack: Submitting tasks too quickly during inference leads to buffer problems w/o proxystore
-            if not first and ps_name is None:
-                self.logger.info('Waiting to allow last set of tasks to send to worker')
-                sleep(45)  # Wait a minute for the last tasks to make it out of the buffer
-            first = False
             
             # Get a model that is ready for inference
             model = self.ready_models.get()
@@ -351,6 +346,10 @@ class Thinker(BaseThinker):
             
             # Run inference with all segments available
             for cid, (chunk, chunk_msg) in enumerate(zip(self.inference_chunks, self.inference_proxies)):
+                # Hack: Submitting tasks too quickly during inference leads to buffer problems w/o proxystore
+                if ps_name is None:
+                    self.inference_limiter.acquire()
+                
                 self.queues.send_inputs([model_msg_proxy], chunk_msg,
                                         topic='infer', method='evaluate_mpnn',
                                         keep_inputs=False,
@@ -370,6 +369,10 @@ class Thinker(BaseThinker):
             # Wait for a result
             result = self.queues.get_result(topic='infer')
             self.logger.info(f'Received inference task {i + 1}/{n_tasks}')
+            
+            # Hack: Control the rate at which we submit tasks w/o ProxyStore 
+            if self.ps_names['infer'] is None:
+                self.inference_limiter.release()
 
             # Save the inference information to disk
             with open(self.output_dir.joinpath('inference-results.json'), 'a') as fp:
