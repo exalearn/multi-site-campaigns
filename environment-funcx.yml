@@ -29,9 +29,8 @@ dependencies:
   - pip:
       - -e .
       - ase==3.22.1
-      - funcx==0.3.9
-      - funcx_endpoint==0.3.3
-      - intel-tensorflow==2.8
+      - funcx_endpoint
+      - tensorflow-cpu==2.8
       - python-git-info
       - flatten-dict
       - colmena==0.3.*
