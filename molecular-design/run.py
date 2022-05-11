@@ -149,7 +149,7 @@ class Thinker(BaseThinker):
         self.ready_models = Queue()
         self.num_training_complete = 0  # Tracks when we are done with training all models
         self.inference_batch = 0
-        self.inference_limiter = Semaphore(32)  # Maximum number of inference tasks to send at once (only used with out proxystore)
+        self.inference_limiter = Semaphore(16)  # Maximum number of inference tasks to send at once (only used with out proxystore)
 
         # Start with inference. Push all models immediately to the queue after triggering inference engine
         self.start_inference.set()
@@ -178,7 +178,6 @@ class Thinker(BaseThinker):
                 mol = Chem.MolFromInchi(inchi)
                 smiles = Chem.MolToSmiles(mol)
             except RuntimeError:
-                import pdb; pdb.set_trace()
                 self.logger.error(f'Parse failed for {inchi}')
                 raise
                 
@@ -526,16 +525,16 @@ if __name__ == '__main__':
     # Init ProxyStore backends
     ps_backends = {args.simulate_ps_backend, args.infer_ps_backend, args.train_ps_backend}
     if 'redis' in ps_backends:
-        ps.store.init_store(ps.store.STORES.REDIS, name='redis', hostname=args.redishost, port=args.redisport)
+        ps.store.init_store(ps.store.STORES.REDIS, name='redis', hostname=args.redishost, port=args.redisport, stats=True)
     if 'file' in ps_backends:
         if args.ps_file_dir is None:
             raise ValueError('Must specify --ps-file-dir to use the filesystem ProxyStore backend')
-        ps.store.init_store(ps.store.STORES.FILE, name='file', store_dir=ps_file_dir)
+        ps.store.init_store(ps.store.STORES.FILE, name='file', store_dir=ps_file_dir, stats=True)
     if 'globus' in ps_backends:
         if args.ps_globus_config is None:
             raise ValueError('Must specify --ps-globus-config to use the Globus ProxyStore backend')
         endpoints = ps.store.globus.GlobusEndpoints.from_json(args.ps_globus_config)
-        ps.store.init_store(ps.store.STORES.GLOBUS, name='globus', endpoints=endpoints)
+        ps.store.init_store(ps.store.STORES.GLOBUS, name='globus', endpoints=endpoints, stats=True, timeout=600)
     if args.no_proxystore:
         ps_names = defaultdict(lambda: None)  # No proxystore for no one
     else:
