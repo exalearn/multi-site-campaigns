@@ -1,0 +1,12 @@
+{
+    "08925f04-569f-11e7-bef8-22000b9a448b": {
+        "host_regex": "theta(.*?)",
+        "endpoint_path": "/projects/CSC249ADCD08/jgpaul/scratch/proxystore_globus_dump",
+        "local_path": "/lus/theta-fs0/projects/CSC249ADCD08/jgpaul/scratch/proxystore_globus_dump"
+    },
+    "af7bda53-6d04-11e5-ba46-22000b92c6ec" : {
+        "host_regex": "midway2(.*?)",
+        "endpoint_path": "/~/proxystore-dump",
+        "local_path": "/home/jgpauloski/proxystore-dump"
+    }
+}
