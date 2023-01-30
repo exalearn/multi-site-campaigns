@@ -29,8 +29,7 @@ dependencies:
   - pip:
       - -e .
       - ase==3.22.1
-      - git+https://github.com/wardlt/parsl.git@pin_cuda
       - python-git-info
       - tensorflow-cpu==2.8
       - flatten-dict
-      - colmena==0.3.*
+      - colmena==0.4.*

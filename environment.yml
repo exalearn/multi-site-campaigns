@@ -1,10 +1,12 @@
-name: multisite-fx
+# Environment with CPU-only dependencies
+#  Tensorflow and PyTorch deps should change to match your GPU
+name: multisite
 channels:
   - defaults
   - conda-forge
 dependencies:
   # Core dependencies for Colmena
-  - python==3.8.*
+  - python==3.10.*
   - redis==5.0.3
   - redis-py==3.4.1
   - jupyterlab
@@ -13,12 +15,12 @@ dependencies:
   - pip
 
   # Dependencies from the molecular design app
-  - matplotlib==3.3.3
-  - openbabel==3.0.0
+  - matplotlib==3.5.*
+  - openbabel==3.1.*
   - geometric==0.9.*
   - qcengine==0.23.0
   - pyyaml < 6
-  - rdkit==2019.09.3
+  - rdkit==2022.09.4
   - py-cpuinfo<6
   - msgpack-python==1.*
   - xtb-python
@@ -27,10 +29,16 @@ dependencies:
 
   # Pip packages for all of them
   - pip:
-      - -e .
-      - ase==3.22.1
+      # Workflow tools
       - funcx_endpoint
+      - colmena==0.4.*
+      - parsl==2023.1.23
+      - -e molecular-design
+
+      # AI frameworks
       - tensorflow-cpu==2.8
+
+      # Dependencies for molecular design app
+      - ase==3.22.1
       - python-git-info
       - flatten-dict
-      - colmena==0.3.*
