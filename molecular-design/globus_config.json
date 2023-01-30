@@ -5,7 +5,7 @@
         "local_path": "/lus/theta-fs0/projects/CSC249ADCD08/edw/colmena/multi-site-single-fidelity/proxy-store-scratch"
     },
     "anl#lambda0" : {
-        "host_regex": "lambda.*",
+        "host_regex": "(lambda.*|venti.*)",
         "endpoint_path": "/lambda_stor/homes/lward/electrolyte-design/proxystore_stash",
         "local_path": "/lambda_stor/homes/lward/electrolyte-design/proxystore_stash"
     }

@@ -17,6 +17,10 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 import proxystore as ps
+from proxystore.store import register_store
+from proxystore.store.file import FileStore
+from proxystore.store.globus import GlobusEndpoints, GlobusStore
+from proxystore.store.redis import RedisStore
 from rdkit import Chem
 from tqdm import tqdm
 from colmena.models import Result
@@ -30,7 +34,7 @@ from moldesign.store.models import MoleculeData
 from moldesign.store.recipes import apply_recipes
 from moldesign.utils import get_platform_info
 
-from config import theta_debug_and_lambda
+from config import theta_debug_and_venti as make_config
 
 
 def run_simulation(smiles: str, n_nodes: int, spec: str = 'small_basis') -> Tuple[List[OptimizationResult], List[AtomicResult]]:
@@ -159,7 +163,7 @@ class Thinker(BaseThinker):
         inference_msgs = [chunk['dict'].tolist() for chunk in self.inference_chunks]
         if self.ps_names['infer'] is not None:
             keys = [f'search-{mid}' for mid in range(len(inference_msgs))]
-            self.inference_proxies = ps.store.get_store(self.ps_names['infer']).proxy_batch(inference_msgs, keys=keys, strict=True)
+            self.inference_proxies = ps.store.get_store(self.ps_names['infer']).proxy_batch(inference_msgs)
         else:
             self.inference_proxies = inference_msgs  # No proxies, just send the message as-is
 
@@ -289,7 +293,7 @@ class Thinker(BaseThinker):
         # If desired store them as proxies in a large batch
         if self.ps_names['train'] is not None:
             keys = [f'model-{mid}' for mid in range(len(self.mpnns))]
-            model_msgs = ps.store.get_store(self.ps_names['train']).proxy_batch(model_msgs, keys=keys, strict=True)
+            model_msgs = ps.store.get_store(self.ps_names['train']).proxy_batch(model_msgs)
 
         for mid, (model, model_msg) in enumerate(zip(self.mpnns, model_msgs)):
             # Make the database
@@ -367,7 +371,7 @@ class Thinker(BaseThinker):
 
             # Proxy it once, to be used by all inference tasks
             if ps_name is not None:
-                model_msg_proxy = ps.store.get_store(ps_name).proxy(model_msg, key=f'model-{mid}-{self.inference_batch}')
+                model_msg_proxy = ps.store.get_store(ps_name).proxy(model_msg)
             else:
                 model_msg_proxy = model_msg  # No proxy
 
@@ -545,11 +549,23 @@ if __name__ == '__main__':
     # Set up the logging
     handlers = [logging.FileHandler(os.path.join(out_dir, 'runtime.log')),
                 logging.StreamHandler(sys.stdout)]
+
+    class ParslFilter(logging.Filter):
+        """Filter out Parsl debug logs"""
+
+        def filter(self, record):
+            return not (record.levelno == logging.DEBUG and '/parsl/' in record.pathname)
+
+
+    for h in handlers:
+        h.addFilter(ParslFilter())
+
+    
     logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                         level=logging.INFO, handlers=handlers)
     logging.info(f'Run directory: {out_dir}')
 
-    # Make the PS files directory inside of the run directory
+    # Make the PS files directory inside run directory
     ps_file_dir = os.path.abspath(os.path.join(out_dir, args.ps_file_dir))
     os.makedirs(ps_file_dir, exist_ok=False)
     logging.info(f'Scratch directory for ProxyStore files: {ps_file_dir}')
@@ -557,16 +573,17 @@ if __name__ == '__main__':
     # Init ProxyStore backends
     ps_backends = {args.simulate_ps_backend, args.infer_ps_backend, args.train_ps_backend}
     if 'redis' in ps_backends:
-        ps.store.init_store(ps.store.STORES.REDIS, name='redis', hostname=args.redishost, port=args.redisport, stats=True)
+        store = RedisStore(name='redis', hostname=args.redishost, port=args.redisport, stats=True)
+        register_store(store)
     if 'file' in ps_backends:
         if args.ps_file_dir is None:
             raise ValueError('Must specify --ps-file-dir to use the filesystem ProxyStore backend')
-        ps.store.init_store(ps.store.STORES.FILE, name='file', store_dir=ps_file_dir, stats=True)
+        register_store(FileStore(name='file', store_dir=ps_file_dir, stats=True))
     if 'globus' in ps_backends:
         if args.ps_globus_config is None:
             raise ValueError('Must specify --ps-globus-config to use the Globus ProxyStore backend')
-        endpoints = ps.store.globus.GlobusEndpoints.from_json(args.ps_globus_config)
-        ps.store.init_store(ps.store.STORES.GLOBUS, name='globus', endpoints=endpoints, stats=True, timeout=600)
+        endpoints = GlobusEndpoints.from_json(args.ps_globus_config)
+        register_store(GlobusStore(name='globus', endpoints=endpoints, stats=True, timeout=600))
     if args.no_proxystore:
         ps_names = defaultdict(lambda: None)  # No proxystore for no one
     else:
@@ -601,11 +618,11 @@ if __name__ == '__main__':
         from colmena.task_server import ParslTaskServer
 
         # Create the resource configuration
-        config = theta_debug_and_lambda(out_dir)
+        config = make_config(out_dir)
 
         # Assign tasks to the appropriate executor
-        methods = [(f, {'executors': ['v100']}) for f in [my_evaluate_mpnn, my_update_mpnn, my_retrain_mpnn]]
-        methods.append((my_run_simulation, {'executors': ['knl']}))
+        methods = [(f, {'executors': ['gpu']}) for f in [my_evaluate_mpnn, my_update_mpnn, my_retrain_mpnn]]
+        methods.append((my_run_simulation, {'executors': ['cpu']}))
 
         # Create the server
         doer = ParslTaskServer(methods, queues, config)
