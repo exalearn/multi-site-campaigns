@@ -1,5 +1,6 @@
+from dataclasses import asdict
 from threading import Event, Lock, Semaphore
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Any
 from functools import partial, update_wrapper
 from collections import defaultdict
 from pathlib import Path
@@ -66,6 +67,31 @@ def run_simulation(smiles: str, n_nodes: int, spec: str = 'small_basis') -> Tupl
     return [neutral_relax, oxidized_relax], []
 
 
+def _get_proxy_stats(obj: Any, result: Result):
+    """Update a Result object with the proxy stats of its result
+
+    Should be run after using the result and just before saving the output
+
+    Args:
+        obj: Pointer to value of the result before resolution
+        result: Result object to be updated with proxy stats and Globus transfer ID, if available
+    """
+
+    if isinstance(obj, ps.proxy.Proxy):
+        store = ps.store.get_store(obj)
+
+        # Store the resolution stats
+        if store.has_stats:
+            stats = store.stats(obj)
+            stats = dict((k, asdict(v)) for k, v in stats.items())
+            result.task_info['proxy_stats'] = stats
+
+        # Store the Xfer ID
+        if isinstance(store, ps.store.globus.GlobusStore):
+            key = ps.proxy.get_key(obj)
+            result.task_info['transfer_id'] = key.split(":")[0]
+
+
 class Thinker(BaseThinker):
     """ML-enhanced optimization loop for molecular design"""
 
@@ -129,7 +155,7 @@ class Thinker(BaseThinker):
         self.mols['dict'] = self.mols['dict'].apply(json.loads)
         self.inference_chunks = np.array_split(self.mols, len(self.mols) // self.inference_chunk_size + 1)
         self.logger.info(f'Split {len(self.mols)} molecules into {len(self.inference_chunks)} chunks for inference')
-        
+
         # Batch add inference chunks to ProxyStore, as they will be used frequently
         inference_msgs = [chunk['dict'].tolist() for chunk in self.inference_chunks]
         if self.ps_names['infer'] is not None:
@@ -155,7 +181,7 @@ class Thinker(BaseThinker):
         self.start_inference.set()
         for mpnn in self.mpnns:
             self.ready_models.put(mpnn)
-        
+
         # Allocate all nodes that are under controlled use to simulation
         self.rec.reallocate(None, 'simulation', 'all')
 
@@ -164,7 +190,7 @@ class Thinker(BaseThinker):
 
         # Wait for the first set of tasks to be available
         self.task_queue_ready.wait()
-        
+
         # If desired, wait until model update is done
         if self.pause_during_update:
             if self.update_in_progress.is_set():
@@ -180,8 +206,7 @@ class Thinker(BaseThinker):
             except RuntimeError:
                 self.logger.error(f'Parse failed for {inchi}')
                 raise
-                
-                
+
             self.logger.info(f'Submitted {smiles} to simulate with NWChem. Run score: {info["ucb"]}')
             self.already_searched.add(inchi)
             self.queues.send_inputs(smiles, task_info=info,
@@ -197,6 +222,7 @@ class Thinker(BaseThinker):
         self.rec.release("simulation", 1)
 
         # If successful, add to the database
+        proxy = result.value
         if result.success:
             # Mark that we've had another complete result
             self.n_evaluated += 1
@@ -220,7 +246,7 @@ class Thinker(BaseThinker):
                 data.add_single_point(r)
             data.update_thermochem()
             apply_recipes(data)
-            
+
             # Add the IPs to the result object
             result.task_info["ip"] = data.oxidation_potential.copy()
 
@@ -234,7 +260,7 @@ class Thinker(BaseThinker):
                 for r in opt_records + hess_records:
                     print(r.json(), file=fp)
             self.logger.info(f'Added complete calculation for {smiles} to database.')
-            
+
             # Mark that we've completed one
             if self.n_evaluated >= self.n_to_evaluate:
                 self.logger.info(f'No more molecules left to screen')
@@ -243,6 +269,7 @@ class Thinker(BaseThinker):
             self.logger.info(f'Computations failed for {smiles}. Check JSON file for stacktrace')
 
         # Write out the result to disk
+        _get_proxy_stats(proxy, result)
         with open(self.output_dir.joinpath('simulation-results.json'), 'a') as fp:
             print(result.json(exclude={'value'}), file=fp)
         self.logger.info(f'Processed simulation task.')
@@ -264,7 +291,7 @@ class Thinker(BaseThinker):
         if self.ps_names['train'] is not None:
             keys = [f'model-{mid}' for mid in range(len(self.mpnns))]
             model_msgs = ps.store.get_store(self.ps_names['train']).proxy_batch(model_msgs, keys=keys, strict=True)
-        
+
         for mid, (model, model_msg) in enumerate(zip(self.mpnns, model_msgs)):
             # Make the database
             train_data = dict(
@@ -281,7 +308,7 @@ class Thinker(BaseThinker):
                                         input_kwargs={'random_state': mid})
             else:
                 self.queues.send_inputs(model_msg, train_data, method='update_mpnn', topic='train',
-                                        task_info={'model_id': mid}, # 'molecules': list()
+                                        task_info={'model_id': mid},  # 'molecules': list()
                                         keep_inputs=False,
                                         input_kwargs={'random_state': mid})
             self.logger.info(f'Submitted model {mid} to train with {len(train_data)} entries')
@@ -290,12 +317,9 @@ class Thinker(BaseThinker):
     def update_weights(self, result: Result):
         """Process the results of the saved model"""
 
-        # Save results to disk
-        with open(self.output_dir.joinpath('training-results.json'), 'a') as fp:
-            print(result.json(exclude={'inputs', 'value'}), file=fp)
-
         # Make sure the run completed
         model_id = result.task_info['model_id']
+        proxy = result.value
         if not result.success:
             self.logger.warning(f'Training failed for {model_id}')
         else:
@@ -307,10 +331,15 @@ class Thinker(BaseThinker):
             self.logger.info(f'Model {model_id} finished training.')
             with open(self.output_dir.joinpath('training-history.json'), 'a') as fp:
                 print(repr(history), file=fp)
-                
+
         # Send the model to inference
         self.start_inference.set()
         self.ready_models.put(self.mpnns[model_id])
+
+        # Save results to disk
+        _get_proxy_stats(proxy, result)
+        with open(self.output_dir.joinpath('training-results.json'), 'a') as fp:
+            print(result.json(exclude={'inputs', 'value'}), file=fp)
 
         # Mark that a model has finished training and trigger inference if all done
         self.num_training_complete += 1
@@ -324,31 +353,31 @@ class Thinker(BaseThinker):
         # Make a folder for the models
         model_folder = self.output_dir.joinpath('models')
         model_folder.mkdir(exist_ok=True)
-        
+
         # Get the name of the proxy store
         ps_name = self.ps_names['infer']
-            
+
         # Submit the chunks to the workflow engine
         for mid in range(len(self.mpnns)):
-            
+
             # Get a model that is ready for inference
             model = self.ready_models.get()
-            
+
             # Convert it to a pickle-able message
             model_msg = MPNNMessage(model)
-            
+
             # Proxy it once, to be used by all inference tasks
             if ps_name is not None:
                 model_msg_proxy = ps.store.get_store(ps_name).proxy(model_msg, key=f'model-{mid}-{self.inference_batch}')
             else:
                 model_msg_proxy = model_msg  # No proxy
-            
+
             # Run inference with all segments available
             for cid, (chunk, chunk_msg) in enumerate(zip(self.inference_chunks, self.inference_proxies)):
                 # Hack: Submitting tasks too quickly during inference leads to buffer problems w/o proxystore
                 if ps_name is None:
                     self.inference_limiter.acquire()
-                
+
                 self.queues.send_inputs([model_msg_proxy], chunk_msg,
                                         topic='infer', method='evaluate_mpnn',
                                         keep_inputs=False,
@@ -368,14 +397,11 @@ class Thinker(BaseThinker):
             # Wait for a result
             result = self.queues.get_result(topic='infer')
             self.logger.info(f'Received inference task {i + 1}/{n_tasks}')
-            
+            proxy = result.value
+
             # Hack: Control the rate at which we submit tasks w/o ProxyStore 
             if self.ps_names['infer'] is None:
                 self.inference_limiter.release()
-
-            # Save the inference information to disk
-            with open(self.output_dir.joinpath('inference-results.json'), 'a') as fp:
-                print(result.json(exclude={'value'}), file=fp)
 
             # Raise an error if this task failed
             if not result.success:
@@ -385,6 +411,12 @@ class Thinker(BaseThinker):
             chunk_id = result.task_info.get('chunk_id')
             model_id = result.task_info.get('model_id')
             y_pred[chunk_id][:, model_id] = np.squeeze(result.value)
+
+            # Save the inference information to disk
+            _get_proxy_stats(proxy, result)
+            with open(self.output_dir.joinpath('inference-results.json'), 'a') as fp:
+                print(result.json(exclude={'value'}), file=fp)
+
             self.logger.info(f'Processed inference task {i + 1}/{n_tasks}')
 
         # Compute the mean and std for each prediction
@@ -442,7 +474,7 @@ if __name__ == '__main__':
     group = parser.add_argument_group(title='Network Configuration', description='How to connect to the Redis task queues and task servers, etc')
     group.add_argument("--redishost", default="127.0.0.1", help="Address at which the redis server can be reached")
     group.add_argument("--redisport", default="6379", help="Port on which redis is available")
-    
+
     # Computational infrastructure information
     group = parser.add_argument_group(title='Compute Infrastructure', description='Information about how to run the tasks')
     group.add_argument("--ml-endpoint", help='FuncX endpoint ID for model training and interface')
@@ -477,7 +509,7 @@ if __name__ == '__main__':
     group.add_argument('--ps-threshold', default=10000, type=int, help='Min size in bytes for transferring objects via ProxyStore')
     group.add_argument('--ps-file-dir', default=None, help='Filesystem directory to use with the ProxyStore file backend')
     group.add_argument('--ps-globus-config', default=None, help='Globus Endpoint config file to use with the ProxyStore Globus backend')
-    
+
     # Configuration for optional Parsl backend
     group = parser.add_argument_group(title='Parsl', description='Settings related to Parsl')
     group.add_argument('--use-parsl', action='store_true', help='Use Parsl instead of FuncX')
@@ -496,7 +528,8 @@ if __name__ == '__main__':
     # Create an output directory with the time and run parameters
     start_time = datetime.utcnow()
     params_hash = hashlib.sha256(json.dumps(run_params).encode()).hexdigest()[:6]
-    out_dir = os.path.join('runs', f'{args.qc_specification}-N{args.num_qc_workers}-n{args.nodes_per_task}-{params_hash}-{start_time.strftime("%d%b%y-%H%M%S")}')
+    out_dir = os.path.join('runs',
+                           f'{args.qc_specification}-N{args.num_qc_workers}-n{args.nodes_per_task}-{params_hash}-{start_time.strftime("%d%b%y-%H%M%S")}')
     os.makedirs(out_dir, exist_ok=False)
 
     # Save the run parameters to disk
@@ -516,7 +549,7 @@ if __name__ == '__main__':
     logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                         level=logging.INFO, handlers=handlers)
     logging.info(f'Run directory: {out_dir}')
-    
+
     # Make the PS files directory inside of the run directory
     ps_file_dir = os.path.abspath(os.path.join(out_dir, args.ps_file_dir))
     os.makedirs(ps_file_dir, exist_ok=False)
@@ -567,20 +600,21 @@ if __name__ == '__main__':
     # Create the task servers
     if args.use_parsl:
         from colmena.task_server import ParslTaskServer
+
         # Create the resource configuration
         config = theta_debug_and_lambda(out_dir)
-        
+
         # Assign tasks to the appropriate executor
         methods = [(f, {'executors': ['v100']}) for f in [my_evaluate_mpnn, my_update_mpnn, my_retrain_mpnn]]
         methods.append((my_run_simulation, {'executors': ['knl']}))
-        
+
         # Create the server
         doer = ParslTaskServer(methods, server_queues, config)
-        
+
     else:
         from colmena.task_server.funcx import FuncXTaskServer
         from funcx import FuncXClient
-        
+
         fx_client = FuncXClient()
         task_map = dict((f, args.ml_endpoint) for f in [my_evaluate_mpnn, my_update_mpnn, my_retrain_mpnn])
         task_map[my_run_simulation] = args.qc_endpoint
