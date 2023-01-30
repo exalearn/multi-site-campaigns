@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from random import shuffle, sample
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from dataclasses import asdict
 import hashlib
 import logging
@@ -30,9 +30,7 @@ from fff.learning.gc.ase import SchnetCalculator
 from fff.learning.gc.functions import GCSchNetForcefield
 from fff.learning.gc.models import SchNet, load_pretrained_model
 from fff.learning.util.messages import TorchMessage
-from fff.sampling.mctbp import MCTBP
 from fff.sampling.md import MolecularDynamics
-from fff.sampling.mhm import MHMSampler
 from fff.simulation import run_calculator
 from fff.simulation.utils import read_from_string, write_to_string
 
@@ -83,7 +81,7 @@ class SimulationTask:
     atoms: ase.Atoms  # Structure to be run
     traj_id: int  # Which trajectory this came from
     ml_eng: float  # Energy predicted from machine learning model
-    ml_std: float | None = None  # Uncertainty of the model
+    ml_std: Optional[float] = None  # Uncertainty of the model
 
 
 def _get_proxy_stats(obj: Any, result: Result):
@@ -189,7 +187,7 @@ class Thinker(BaseThinker):
 
         # Storage for inference tasks and results
         self.inference_pool: list[ase.Atoms] = []  # List of objects ready for inference
-        self.inference_results: dict[int, tuple[list[ase.Atoms], list[Result | None]]] = {}  # Results from inf batches
+        self.inference_results: dict[int, tuple[list[ase.Atoms], list[Optional[Result]]]] = {}  # Results from inf batches
         self.inference_complete: list[tuple[list[ase.Atoms], list[Result]]] = []  # Complete, successful inf batches
 
         # Create a proxy for the starting model. It never changes

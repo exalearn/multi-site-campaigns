@@ -3,10 +3,11 @@
 name: multisite
 channels:
   - defaults
+  - psi4
   - conda-forge
 dependencies:
   # Core dependencies for Colmena
-  - python==3.10.*
+  - python==3.9.*
   - redis==5.0.3
   - redis-py==3.4.1
   - jupyterlab
@@ -27,18 +28,32 @@ dependencies:
   - psutil
   - tqdm
 
+  # Requirements for the surrogate tuning app
+  - psi4==1.6.1*
+  - pandas==1.*
+
   # Pip packages for all of them
   - pip:
       # Workflow tools
       - funcx_endpoint
       - colmena==0.4.*
       - parsl==2023.1.23
-      - -e molecular-design
 
       # AI frameworks
+      - --extra-index-url https://download.pytorch.org/whl/cpu  # Change to proper CUDA if needed
+      - -f https://data.pyg.org/whl/torch-1.12.0+cpu.html  # Change to CUDA version if needed
       - tensorflow-cpu==2.8
+      - torch==1.12.0
+      - torch-scatter==2.0.*
+      - torch-sparse==0.6.*
+      - torch-geometric==2.1.*
+      - torch-cluster==1.6.*
 
       # Dependencies for molecular design app
+      - -e molecular-design
       - ase==3.22.1
       - python-git-info
       - flatten-dict
+
+      # Dependencies for the surrogate finetuning
+      - -e finetuning-surrogates
