@@ -6,7 +6,6 @@ from collections import defaultdict
 from pathlib import Path
 from datetime import datetime
 from queue import Queue
-from time import sleep
 import argparse
 import logging
 import hashlib
@@ -21,7 +20,7 @@ import proxystore as ps
 from rdkit import Chem
 from tqdm import tqdm
 from colmena.models import Result
-from colmena.redis.queue import ClientQueues, make_queue_pairs
+from colmena.queue.redis import RedisQueues
 from colmena.thinker import BaseThinker, result_processor, event_responder, task_submitter
 from colmena.thinker.resources import ResourceCounter
 from qcelemental.models import OptimizationResult, AtomicResult
@@ -50,7 +49,7 @@ def run_simulation(smiles: str, n_nodes: int, spec: str = 'small_basis') -> Tupl
     # Make the initial geometry
     inchi, xyz = generate_inchi_and_xyz(smiles)
 
-    # Make the compute spec
+    # Make compute spec
     compute_config = {'nnodes': n_nodes, 'cores_per_rank': 2, 'ncores': 64}
 
     # Get the specification and make it more resilient
@@ -95,7 +94,7 @@ def _get_proxy_stats(obj: Any, result: Result):
 class Thinker(BaseThinker):
     """ML-enhanced optimization loop for molecular design"""
 
-    def __init__(self, queues: ClientQueues,
+    def __init__(self, queues: RedisQueues,
                  database: List[MoleculeData],
                  search_space: Path,
                  n_to_evaluate: int,
@@ -574,14 +573,14 @@ if __name__ == '__main__':
         ps_names = {'simulate': args.simulate_ps_backend, 'infer': args.infer_ps_backend, 'train': args.train_ps_backend}
 
     # Connect to the redis server
-    client_queues, server_queues = make_queue_pairs(args.redishost,
-                                                    name=start_time.strftime("%d%b%y-%H%M%S"),
-                                                    port=args.redisport,
-                                                    topics=['simulate', 'infer', 'train'],
-                                                    serialization_method='pickle',
-                                                    keep_inputs=True,
-                                                    proxystore_name=None if args.no_proxystore else ps_names,
-                                                    proxystore_threshold=None if args.no_proxystore else args.ps_threshold)
+    queues = RedisQueues(hostname=args.redishost,
+                         port=args.redisport,
+                         prefix=start_time.strftime("%d%b%y-%H%M%S"),
+                         topics=['simulate', 'infer', 'train'],
+                         serialization_method='pickle',
+                         keep_inputs=True,
+                         proxystore_name=None if args.no_proxystore else ps_names,
+                         proxystore_threshold=None if args.no_proxystore else args.ps_threshold)
 
     # Apply wrappers to functions to affix static settings
     #  Update wrapper changes the __name__ field, which is used by the Method Server
@@ -609,8 +608,7 @@ if __name__ == '__main__':
         methods.append((my_run_simulation, {'executors': ['knl']}))
 
         # Create the server
-        doer = ParslTaskServer(methods, server_queues, config)
-
+        doer = ParslTaskServer(methods, queues, config)
     else:
         from colmena.task_server.funcx import FuncXTaskServer
         from funcx import FuncXClient
@@ -618,10 +616,10 @@ if __name__ == '__main__':
         fx_client = FuncXClient()
         task_map = dict((f, args.ml_endpoint) for f in [my_evaluate_mpnn, my_update_mpnn, my_retrain_mpnn])
         task_map[my_run_simulation] = args.qc_endpoint
-        doer = FuncXTaskServer(task_map, fx_client, server_queues)
+        doer = FuncXTaskServer(task_map, fx_client, queues)
 
     # Configure the "thinker" application
-    thinker = Thinker(client_queues,
+    thinker = Thinker(queues,
                       database,
                       args.search_space,
                       args.search_size,
@@ -650,7 +648,7 @@ if __name__ == '__main__':
         thinker.join()
         logging.info('Task generator has completed')
     finally:
-        client_queues.send_kill_signal()
+        queues.send_kill_signal()
 
     # Wait for the method server to complete
     doer.join()
