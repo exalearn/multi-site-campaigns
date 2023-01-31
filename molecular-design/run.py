@@ -668,4 +668,4 @@ if __name__ == '__main__':
     # for file/globus backends)
     for ps_backend in ps_backends:
         if ps_backend is not None:
-            ps.store.get_store(ps_backend).cleanup()
+            ps.store.get_store(ps_backend).close()
