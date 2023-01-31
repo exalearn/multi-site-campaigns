@@ -1,8 +1,8 @@
 {
-    "alcf#08925f04-569f-11e7-bef8-22000b9a448b": {
+    "u_ei35ibphljgubnttgfktzs6k2m#7b115c20-f67b-11ec-835d-cd84b862b754": {
         "host_regex": "(theta.*|jupyter.*)",
-        "endpoint_path": "/lus/theta-fs0/projects/CSC249ADCD08/edw/colmena/multi-site-single-fidelity/proxy-store-scratch",
-        "local_path": "/lus/theta-fs0/projects/CSC249ADCD08/edw/colmena/multi-site-single-fidelity/proxy-store-scratch"
+        "endpoint_path": "/CSC249ADCD08/multi-site-campaigns/molecular-design/globus-proxystore-scratch",
+        "local_path": "/lus/theta-fs0/projects/CSC249ADCD08/multi-site-campaigns/molecular-design/globus-proxystore-scratch"
     },
     "anl#lambda0" : {
         "host_regex": "(lambda.*|venti.*)",

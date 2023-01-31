@@ -89,12 +89,6 @@ def _get_proxy_stats(obj: Any, result: Result):
             stats = dict((k, asdict(v)) for k, v in stats.items())
             result.task_info['proxy_stats'] = stats
 
-        # Store the Xfer ID
-        if isinstance(store, ps.store.globus.GlobusStore):
-            key = ps.proxy.get_key(obj)
-            result.task_info['transfer_id'] = key.split(":")[0]
-
-
 class Thinker(BaseThinker):
     """ML-enhanced optimization loop for molecular design"""
 
