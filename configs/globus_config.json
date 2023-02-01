@@ -1,0 +1,12 @@
+{
+    "u_ei35ibphljgubnttgfktzs6k2m#7b115c20-f67b-11ec-835d-cd84b862b754": {
+        "host_regex": "(theta.*|jupyter.*)",
+        "endpoint_path": "/CSC249ADCD08/multi-site-campaigns/globus-proxystore-scratch",
+        "local_path": "/lus/theta-fs0/projects/CSC249ADCD08/multi-site-campaigns/globus-proxystore-scratch"
+    },
+    "anl#lambda0" : {
+        "host_regex": "(lambda.*|venti.*)",
+        "endpoint_path": "/lambda_stor/homes/lward/proxystore_stash",
+        "local_path": "/lambda_stor/homes/lward/proxystore_stash"
+    }
+}
