@@ -86,7 +86,7 @@ class GCSchNetForcefield(BaseLearnableForcefield):
               batch_size: int = 32,
               learning_rate: float = 1e-3,
               huber_deltas: (float, float) = (0.5, 1),
-              energy_weight: float = 0.9,
+              energy_weight: float = 0.1,
               reset_weights: bool = False,
               patience: int = None) -> (TorchMessage, pd.DataFrame):
 
