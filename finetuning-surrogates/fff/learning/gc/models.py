@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import torch
 import torch.nn as nn
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 def load_pretrained_model(
-        path: str | Path,
+        path: Union[str, Path],
         mean: Optional[float] = None,
         std: Optional[float] = None,
         clip_value: Optional[float] = None,

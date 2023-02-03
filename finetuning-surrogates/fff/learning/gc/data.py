@@ -1,7 +1,7 @@
 import shutil
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Optional, Callable
+from typing import Optional, Callable, Union
 
 from ase.db import connect
 from ase import Atoms
@@ -44,7 +44,7 @@ class AtomsDataset(InMemoryDataset):
     """Dataset created from a list of """
 
     def __init__(self,
-                 db_path: str | Path,
+                 db_path: Union[str, Path],
                  root: Optional[str] = None,
                  transform: Optional[Callable] = None,
                  pre_transform: Optional[Callable] = None,
@@ -100,7 +100,7 @@ class AtomsDataset(InMemoryDataset):
         return self.collate(data_list)
 
     @classmethod
-    def from_atoms(cls, atoms_lst: list[Atoms], root: str | Path, **kwargs) -> 'AtomsDataset':
+    def from_atoms(cls, atoms_lst: list[Atoms], root: Union[str, Path], **kwargs) -> 'AtomsDataset':
         """Make a data loader from a list of ASE atoms objects
 
         Args:
