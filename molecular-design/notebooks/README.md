@@ -7,7 +7,6 @@ This folder contains all the analyses reported in our paper, and some we did per
 The notebooks expect that the runs have been performed and there are a few folders containing links to special runs:
 
 - `prod_runs`: Runs with default settings used to compare performance of workflow systems
-- `policy_runs`: Runs used to explore different multi-site scheduling policies
 
 The names of the specific runs and associated are provided in the published form of this repository (TBD).
 
