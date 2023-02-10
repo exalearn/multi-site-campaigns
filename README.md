@@ -52,7 +52,7 @@ There are two types of multi-site runs, each requiring differnet configuration p
 You must [create a FuncX endpoint](https://funcx.readthedocs.io/en/latest/endpoints.html) on the each resource being used.
 Once those are started, you will be given a UUID that is provided as input `run.py`.
 
-We provide the FuncX configurations used in this study in [`funcx-configs`](./funcx-configs)
+We provide the FuncX configurations used in this study in [`funcx-configs`](./configs/funcx-configs)
 
 ### Parsl
 
