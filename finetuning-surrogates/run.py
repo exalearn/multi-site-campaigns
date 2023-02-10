@@ -18,13 +18,19 @@ import ase
 from ase.db import connect
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from colmena.models import Result
-from colmena.queue import PipeQueues, ColmenaQueues
+from colmena.queue import ColmenaQueues
+from colmena.queue.redis import RedisQueues
 from colmena.thinker import BaseThinker, event_responder, result_processor, ResourceCounter, task_submitter
 from colmena.task_server.funcx import FuncXTaskServer
 from funcx import FuncXClient
 import proxystore as ps
 import numpy as np
 import torch
+from proxystore.store import register_store
+from proxystore.store.file import FileStore
+from proxystore.store.globus import GlobusStore, GlobusEndpoints
+from proxystore.store.redis import RedisStore
+from proxystore.store.utils import get_key
 
 from fff.learning.gc.ase import SchnetCalculator
 from fff.learning.gc.functions import GCSchNetForcefield
@@ -100,11 +106,6 @@ def _get_proxy_stats(obj: Any, result: Result):
             stats = store.stats(obj)
             stats = dict((k, asdict(v)) for k, v in stats.items())
             result.task_info['result_proxy_stats'] = stats
-
-        # Store the Xfer ID
-        if isinstance(store, ps.store.globus.GlobusStore):
-            key = ps.proxy.get_key(obj)
-            result.task_info['result_transfer_id'] = key.split(":")[0]
 
 
 class Thinker(BaseThinker):
@@ -307,7 +308,7 @@ class Thinker(BaseThinker):
                 # Update the active model
                 if 'sample' in self.ps_names:
                     sample_store = ps.store.get_store(self.ps_names['sample'])
-                    sample_store.evict(ps.proxy.get_key(self.active_model_proxy))
+                    sample_store.evict(get_key(self.active_model_proxy))
                     self.active_model_proxy = sample_store.proxy(SchnetCalculator(model_msg.get_model()))
                 else:
                     self.active_model_proxy = SchnetCalculator(model_msg.get_model())
@@ -323,7 +324,7 @@ class Thinker(BaseThinker):
                 inf_store = ps.store.get_store(self.ps_names['train'])
                 prev_model = self.inference_proxies[model_id]
                 if prev_model is not None:
-                    prev_key = ps.proxy.get_key(prev_model)
+                    prev_key = get_key(prev_model)
                     inf_store.evict(prev_key)
                     self.logger.info(f'Evicted the previous model for model {model_id}')
 
@@ -788,7 +789,7 @@ if __name__ == '__main__':
     group.add_argument("--qc-endpoint", help='FuncX endpoint ID for quantum chemistry')
     group.add_argument("--num-qc-workers", type=int, help="Number of workers performing chemistry tasks")
     group.add_argument("--parsl", action='store_true', help='Use Parsl instead of FuncX')
-    group.add_argument("--parsl-site", choices=['theta-lambda', 'local'], required=True, help='Which configuration to use for Parsl')
+    group.add_argument("--parsl-site", choices=['theta-venti', 'local'], default='theta-venti', help='Which configuration to use for Parsl')
 
     # Problem configuration
     group = parser.add_argument_group(title='Problem Definition',
@@ -813,7 +814,7 @@ if __name__ == '__main__':
     # Parameters related to sampling for new structures
     group = parser.add_argument_group(title="Sampling Settings")
     #  TODO (wardlt): Switch to using a different endpoint for simulation and sampling tasks?
-    group.add_argument("--sampling-method", choices=['md', 'mctbp', 'mhm'], default='mctbp', help='Method used to sample structures')
+    group.add_argument("--sampling-method", choices=['md'], default='md', help='Method used to sample structures')
     group.add_argument("--num-samplers", type=int, default=1, help="Number of agents to use to sample structures")
     group.add_argument("--min-run-length", type=int, default=1,
                        help="Minimum timesteps to run sampling calculations.")
@@ -862,7 +863,7 @@ if __name__ == '__main__':
 
     # Make the calculator
     if args.calculator == 'dft':
-        calc = dict(calc='psi4', method='pbe0-d3', basis='aug-cc-pvdz', num_threads=12)
+        calc = dict(calc='psi4', method='pbe0-d3', basis='aug-cc-pvdz', num_threads=64)
     elif args.calculator == 'ttm':
         from ttm.ase import TTMCalculator
 
@@ -914,14 +915,17 @@ if __name__ == '__main__':
     ps_backends = {args.simulate_ps_backend, args.sample_ps_backend, args.train_ps_backend}
     logger.info(f'Initializing ProxyStore backends: {ps_backends}')
     if 'redis' in ps_backends:
-        ps.store.init_store(ps.store.STORES.REDIS, name='redis', hostname=args.redishost, port=args.redisport, stats=True)
+        store = RedisStore(name='redis', hostname=args.redishost, port=args.redisport, stats=True)
+        register_store(store)
     if 'file' in ps_backends:
-        ps.store.init_store(ps.store.STORES.FILE, name='file', store_dir=str(ps_file_dir.absolute()), stats=True)
+        store = FileStore(name='file', store_dir=str(ps_file_dir.absolute()), stats=True)
+        register_store(store)
     if 'globus' in ps_backends:
         if args.ps_globus_config is None:
             raise ValueError('Must specify --ps-globus-config to use the Globus ProxyStore backend')
-        endpoints = ps.store.globus.GlobusEndpoints.from_json(args.ps_globus_config)
-        ps.store.init_store(ps.store.STORES.GLOBUS, name='globus', endpoints=endpoints, stats=True, timeout=600)
+        endpoints = GlobusEndpoints.from_json(args.ps_globus_config)
+        store = GlobusStore(name='globus', endpoints=endpoints, stats=True, timeout=600)
+        register_store(store)
     ps_names = {'simulate': args.simulate_ps_backend, 'sample': args.sample_ps_backend,
                 'train': args.train_ps_backend, 'infer': args.train_ps_backend}
     if args.no_proxies:
@@ -929,12 +933,14 @@ if __name__ == '__main__':
         logger.info('Not making any proxies')
 
     # Connect to the redis server
-    queues = PipeQueues(topics=['simulate', 'sample', 'train', 'infer'],
-                        serialization_method='pickle',
-                        keep_inputs=False,
-                        proxystore_name=ps_names,
-                        proxystore_threshold=args.ps_threshold)
-
+    queues = RedisQueues(hostname=args.redishost,
+                         port=args.redisport,
+                         prefix=start_time.strftime("%d%b%y-%H%M%S"),
+                         topics=['simulate', 'sample', 'train', 'infer'],
+                         serialization_method='pickle',
+                         keep_inputs=False,
+                         proxystore_name=ps_names,
+                         proxystore_threshold=args.ps_threshold)
 
     # Apply wrappers to functions that will be used to fix certain requirements
     def _wrap(func, **kwargs):
@@ -949,7 +955,7 @@ if __name__ == '__main__':
                             patience=8, reset_weights=False,
                             huber_deltas=args.huber_deltas)
     my_eval_schnet = _wrap(schnet.evaluate, device='cuda')
-    my_run_simulation = _wrap(run_calculator, calc=calc, temp_path=str(out_dir.absolute()))
+    my_run_simulation = _wrap(run_calculator, calc=calc, temp_path='/lus/grand/projects/CSC249ADCD08/psi4')
 
     # Determine which sampling method to use
     sampler_kwargs = {}
@@ -965,20 +971,20 @@ if __name__ == '__main__':
     else:
         raise ValueError(f'Sampling method not supported: {args.sampling_method}')
 
-    my_run_dynamics = _wrap(sampler.run_sampling, device='cuda', **sampler_kwargs)
+    my_run_dynamics = _wrap(sampler.run_sampling, **sampler_kwargs)
 
     # Create the task server
     if args.parsl:
         import config as parsl_configs
         from colmena.task_server import ParslTaskServer
 
-        if args.parsl_site == "theta-lambda":
+        if args.parsl_site == "theta-venti":
             # Create the resource configuration
-            config = parsl_configs.theta_debug_and_lambda(str(out_dir))
+            config = parsl_configs.theta_debug_and_venti(str(out_dir))
 
             # Assign tasks to the appropriate executor
-            methods = [(f, {'executors': ['v100']}) for f in [my_train_schnet, my_eval_schnet]]
-            methods.extend([(f, {'executors': ['knl']}) for f in [my_run_simulation, my_run_dynamics]])
+            methods = [(f, {'executors': ['gpu']}) for f in [my_train_schnet, my_eval_schnet]]
+            methods.extend([(f, {'executors': ['cpu']}) for f in [my_run_simulation, my_run_dynamics]])
         elif args.parsl_site == "local":
             config = parsl_configs.local_parsl(str(out_dir))
             methods = [my_train_schnet, my_eval_schnet, my_run_dynamics, my_run_simulation]
@@ -1035,5 +1041,5 @@ if __name__ == '__main__':
     # for file/globus backends)
     for ps_backend in ps_backends:
         if ps_backend is not None:
-            ps.store.get_store(ps_backend).cleanup()
+            ps.store.get_store(ps_backend).close()
     logging.info('ProxyStores cleaned. Exiting now')
