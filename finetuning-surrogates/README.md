@@ -1,4 +1,6 @@
-# First Attempt
+# Fine-Tunning a Surrogate
+
+> Adapted from: [Fast Finetuned Forcefields](https://github.com/exalearn/fast-finetuned-forcefields/tree/8bfa09f475a82620268b2b6e5ba4ac680887dbc0)
 
 The goal is to rapidly train a machine learning model on relevant regions of a potential energy surface.
 We do so by efficiently sampling structures by running molecular dynamics using the trained models
@@ -11,20 +13,21 @@ This fitting strategy interleaves four different operations:
 - _Selecting_ structures 
 - _Calculating_ the energy and forces for selected structures
 
+
 ## Running the Code
 
-The application is driven by a main script, [`run.py`](./run.py), that dispatches tasks to FuncX endpoints.
-
-You will need to install FuncX endpoints on the target system in the fff python environment before running this.
+The application is driven by a main script, [`run.py`](./run.py). We provide the shell scripts used for our experiments that launch the application using different configurations.
 
 Once you do, call: `python run.py -h` to get a list of full options.
+
+
 
 ## Steering Strategy
 
 The steering strategy is built to simultaneously achive two objectives: training a forcefield, and sampling structures.
 We implement the steering strategy using 4 "agents" that coordinate together in managing two loosely-coupled loops.
 
-![coordination-strategy](./figures/thinker-diagram.svg)
+![coordination-strategy](https://github.com/exalearn/fast-finetuned-forcefields/raw/8bfa09f475a82620268b2b6e5ba4ac680887dbc0/colmena/initial/figures/thinker-diagram.svg)
 
 The "sampling loop" (inner, green) includes a **Sampler** agents which submits molecular dynamics calculations and then submit the final structure to be audited by a **Calculator** agent before the trajectory is continued. 
 The "training loop" beings with **Selector** agents that finds a diverse pool of structures produced by the **Sampler** that are used to retrain a new model libary by **Trainer** agents.
@@ -93,28 +96,3 @@ The calculation tasks are simple: run the physics code to get energies.
 
 Each calculation starts by first picking a structure the "audit" or "active learning" list randomly.
 We launch that calculation to execute remotely and then store the result in an ASE db when complete.
-
-
-## Implementation Details
-
-There are a few implementation tricks that are worth noting to study if they actually make snese.
-
-### Use of Proxies
-
-The machine learning models are always proxied:
-
-- _Starting Model_: We create a proxy for the initial model at the beginning and never evict it.
-- _Sampling Model_: The first model to finish training is proxied for use in the sampling calculations.
-  The model is evicted each time a new batch is trained. 
-- _Inference Model_: Each model is proxied as soon as it finishes training and is re-used across multiple inference tasks.
-  We evict a model from the previous batch each time a new one finishes training.
-
-At present, we do not explicitly proxy any datasets (but probably should) 
-
-### Scheduling
-
-TBD. While write this out once I add in some more options.
-
-## Understanding the Output
-
-TBD
