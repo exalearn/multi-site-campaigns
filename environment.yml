@@ -51,6 +51,7 @@ dependencies:
 
       # Dependencies for molecular design app
       - -e molecular-design
+      - git+https://github.com/exalearn/nfp.git@gc_updates
       - ase==3.22.1
       - python-git-info
       - flatten-dict
