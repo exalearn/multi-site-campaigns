@@ -29,7 +29,7 @@ from colmena.thinker import BaseThinker, result_processor, event_responder, task
 from colmena.thinker.resources import ResourceCounter
 from qcelemental.models import OptimizationResult, AtomicResult
 
-from moldesign.score.mpnn import evaluate_mpnn, update_mpnn, retrain_mpnn, MPNNMessage, custom_objects
+from moldesign.score.nfp import evaluate_mpnn, retrain_mpnn, NFPMessage, custom_objects
 from moldesign.store.models import MoleculeData
 from moldesign.store.recipes import apply_recipes
 from moldesign.utils import get_platform_info
@@ -89,15 +89,16 @@ def _get_proxy_stats(obj: Any, result: Result):
             stats = dict((k, asdict(v)) for k, v in stats.items())
             result.task_info['proxy_stats'] = stats
 
+
 class Thinker(BaseThinker):
     """ML-enhanced optimization loop for molecular design"""
 
-    def __init__(self, queues: RedisQueues,
+    def __init__(self,
+                 queues: RedisQueues,
                  database: List[MoleculeData],
                  search_space: Path,
                  n_to_evaluate: int,
                  n_complete_before_retrain: int,
-                 retrain_from_initial: bool,
                  mpnns: List[tf.keras.Model],
                  inference_chunk_size: int,
                  num_qc_workers: int,
@@ -112,9 +113,8 @@ class Thinker(BaseThinker):
             database: Link to the MongoDB instance used to store results
             search_space: Path to a search space of molecules to evaluate
             n_complete_before_retrain: Number of simulations to complete before retraining
-            retrain_from_initial: Whether to update the model or retrain it from initial weights
             mpnns: List of MPNNs to use for selecting samples
-            output_dir:
+            output_dir: Directory in which to write output results
             pause_during_update: Whether to stop submitting tasks while task list is updating
             ps_names: mapping of topic to proxystore backend to use (or None if not using ProxyStore)
         """
@@ -124,7 +124,6 @@ class Thinker(BaseThinker):
         self.inference_chunk_size = inference_chunk_size
         self.n_complete_before_retrain = n_complete_before_retrain
         self.n_evaluated = 0
-        self.retrain_from_initial = retrain_from_initial
         self.mpnns = mpnns.copy()
         self.output_dir = Path(output_dir)
         self.beta = beta
@@ -172,19 +171,16 @@ class Thinker(BaseThinker):
         self.ready_models = Queue()
         self.num_training_complete = 0  # Tracks when we are done with training all models
         self.inference_batch = 0
-        self.inference_limiter = Semaphore(16)  # Maximum number of inference tasks to send at once (only used with out proxystore)
+        self.inference_limiter = Semaphore(40)  # Maximum number of inference tasks to send at once (only used without proxystore)
 
-        # Start with inference. Push all models immediately to the queue after triggering inference engine
-        self.start_inference.set()
-        for mpnn in self.mpnns:
-            self.ready_models.put(mpnn)
+        # Start with training
+        self.start_training.set()
 
         # Allocate all nodes that are under controlled use to simulation
         self.rec.reallocate(None, 'simulation', 'all')
 
     @task_submitter(task_type='simulation')
     def submit_qc(self):
-
         # Wait for the first set of tasks to be available
         self.task_queue_ready.wait()
 
@@ -281,15 +277,7 @@ class Thinker(BaseThinker):
         self.update_in_progress.set()
         self.num_training_complete = 0
 
-        # Save the models as pickle-able messages
-        model_msgs = [MPNNMessage(model) for model in self.mpnns]
-
-        # If desired store them as proxies in a large batch
-        if self.ps_names['train'] is not None:
-            keys = [f'model-{mid}' for mid in range(len(self.mpnns))]
-            model_msgs = ps.store.get_store(self.ps_names['train']).proxy_batch(model_msgs)
-
-        for mid, (model, model_msg) in enumerate(zip(self.mpnns, model_msgs)):
+        for mid, model in enumerate(self.mpnns):
             # Make the database
             train_data = dict(
                 (d.identifier['smiles'], d.oxidation_potential[self.property_name])
@@ -297,17 +285,14 @@ class Thinker(BaseThinker):
                 if self.property_name in d.oxidation_potential
             )
 
-            # Make the MPNN message
-            if self.retrain_from_initial:
-                self.queues.send_inputs(model.get_config(), train_data, method='retrain_mpnn', topic='train',
-                                        task_info={'model_id': mid},
-                                        keep_inputs=False,
-                                        input_kwargs={'random_state': mid})
-            else:
-                self.queues.send_inputs(model_msg, train_data, method='update_mpnn', topic='train',
-                                        task_info={'model_id': mid},  # 'molecules': list()
-                                        keep_inputs=False,
-                                        input_kwargs={'random_state': mid})
+            # Submit it to run
+            self.queues.send_inputs(model.get_config(),
+                                    train_data,
+                                    method='retrain_mpnn',
+                                    topic='train',
+                                    task_info={'model_id': mid},
+                                    keep_inputs=False,
+                                    input_kwargs={'random_state': mid})
             self.logger.info(f'Submitted model {mid} to train with {len(train_data)} entries')
 
     @result_processor(topic='train')
@@ -361,7 +346,7 @@ class Thinker(BaseThinker):
             model = self.ready_models.get()
 
             # Convert it to a pickle-able message
-            model_msg = MPNNMessage(model)
+            model_msg = NFPMessage(model)
 
             # Proxy it once, to be used by all inference tasks
             if ps_name is not None:
@@ -483,7 +468,8 @@ if __name__ == '__main__':
     # Problem configuration
     group = parser.add_argument_group(title='Problem Definition', description='Defining the search space, models and optimizers-related settings')
     group.add_argument('--qc-specification', default='xtb', choices=['xtb'], help='Which level of quantum chemistry to run')
-    group.add_argument('--mpnn-model-files', nargs="+", help='Path to the MPNN h5 files', required=True)
+    group.add_argument('--mpnn-model-path', help='Path to the MPNN h5 files', required=True)
+    group.add_argument('--model-count', default=8, help='Number of models to use in the ensemble', type=int)
     group.add_argument('--training-set', help='Path to the molecules used to train the initial models', required=True)
     group.add_argument('--search-space', help='Path to molecules to be screened', required=True)
     group.add_argument("--search-size", default=500, type=int, help="Number of new molecules to evaluate during this search")
@@ -493,7 +479,6 @@ if __name__ == '__main__':
 
     # Parameters related to model retraining
     group = parser.add_argument_group(title='Model Training', description='Settings related to model retraining')
-    group.add_argument('--retrain-from-scratch', action='store_true', help='Whether to re-initialize weights before training')
     group.add_argument("--learning-rate", default=1e-3, help="Learning rate for re-training the models", type=float)
     group.add_argument('--num-epochs', default=512, type=int, help='Maximum number of epochs for the model training')
 
@@ -516,7 +501,10 @@ if __name__ == '__main__':
     run_params = args.__dict__
 
     # Load in the models, initial dataset, agent and search space
-    models = [tf.keras.models.load_model(path, custom_objects=custom_objects) for path in tqdm(args.mpnn_model_files, desc='Loading models')]
+    models = [
+        tf.keras.models.load_model(args.mpnn_model_path, custom_objects=custom_objects)
+        for path in tqdm(args.model_path, desc='Loading models')
+    ]
 
     # Read in the training set
     with open(args.training_set) as fp:
@@ -544,6 +532,7 @@ if __name__ == '__main__':
     handlers = [logging.FileHandler(os.path.join(out_dir, 'runtime.log')),
                 logging.StreamHandler(sys.stdout)]
 
+
     class ParslFilter(logging.Filter):
         """Filter out Parsl debug logs"""
 
@@ -554,7 +543,6 @@ if __name__ == '__main__':
     for h in handlers:
         h.addFilter(ParslFilter())
 
-    
     logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                         level=logging.INFO, handlers=handlers)
     logging.info(f'Run directory: {out_dir}')
@@ -595,11 +583,8 @@ if __name__ == '__main__':
 
     # Apply wrappers to functions to affix static settings
     #  Update wrapper changes the __name__ field, which is used by the Method Server
-    my_evaluate_mpnn = partial(evaluate_mpnn, batch_size=128, cache=True)
+    my_evaluate_mpnn = partial(evaluate_mpnn, batch_size=128)
     my_evaluate_mpnn = update_wrapper(my_evaluate_mpnn, evaluate_mpnn)
-
-    my_update_mpnn = partial(update_mpnn, num_epochs=args.num_epochs, learning_rate=args.learning_rate, bootstrap=True, timeout=2700)
-    my_update_mpnn = update_wrapper(my_update_mpnn, update_mpnn)
 
     my_retrain_mpnn = partial(retrain_mpnn, num_epochs=args.num_epochs, learning_rate=args.learning_rate, bootstrap=True, timeout=2700)
     my_retrain_mpnn = update_wrapper(my_retrain_mpnn, retrain_mpnn)
@@ -615,7 +600,7 @@ if __name__ == '__main__':
         config = make_config(out_dir)
 
         # Assign tasks to the appropriate executor
-        methods = [(f, {'executors': ['gpu']}) for f in [my_evaluate_mpnn, my_update_mpnn, my_retrain_mpnn]]
+        methods = [(f, {'executors': ['gpu']}) for f in [my_evaluate_mpnn, my_retrain_mpnn]]
         methods.append((my_run_simulation, {'executors': ['cpu']}))
 
         # Create the server
@@ -625,25 +610,26 @@ if __name__ == '__main__':
         from funcx import FuncXClient
 
         fx_client = FuncXClient()
-        task_map = dict((f, args.ml_endpoint) for f in [my_evaluate_mpnn, my_update_mpnn, my_retrain_mpnn])
+        task_map = dict((f, args.ml_endpoint) for f in [my_evaluate_mpnn, my_retrain_mpnn])
         task_map[my_run_simulation] = args.qc_endpoint
         doer = FuncXTaskServer(task_map, fx_client, queues)
 
     # Configure the "thinker" application
-    thinker = Thinker(queues,
-                      database,
-                      args.search_space,
-                      args.search_size,
-                      args.retrain_frequency,
-                      args.retrain_from_scratch,
-                      models,
-                      args.molecules_per_ml_task,
-                      args.num_qc_workers,
-                      args.qc_specification,
-                      out_dir,
-                      args.beta,
-                      args.pause_during_update,
-                      ps_names)
+    thinker = Thinker(
+        queues=queues,
+        database=database,
+        search_space=args.search_space,
+        n_to_evaluate=args.search_size,
+        n_complete_before_retrain=args.retrain_frequency,
+        mpnns=models,
+        inference_chunk_size=args.molecules_per_ml_task,
+        num_qc_workers=args.num_qc_workers,
+        qc_specification=args.qc_specification,
+        output_dir=out_dir,
+        beta=args.beta,
+        pause_during_update=args.pause_during_update,
+        ps_names=ps_names
+    )
     logging.info('Created the method server and task generator')
 
     try:
