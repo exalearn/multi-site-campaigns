@@ -21,6 +21,10 @@ from proxystore.store import register_store
 from proxystore.store.file import FileStore
 from proxystore.store.globus import GlobusEndpoints, GlobusStore
 from proxystore.store.redis import RedisStore
+from proxystore.store.multi import MultiStore
+from proxystore.store.multi import Policy
+from proxystore.store.dim.margo import MargoStore
+from proxystore.store.endpoint import EndpointStore
 from rdkit import Chem
 from tqdm import tqdm
 from colmena.models import Result
@@ -501,11 +505,12 @@ if __name__ == '__main__':
     group = parser.add_argument_group(title='ProxyStore', description='Settings related to ProxyStore')
     group.add_argument('--no-proxystore', action='store_true', help='Turn off ProxyStore')
     group.add_argument('--simulate-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus'], help='ProxyStore backend to use with "simulate" topic')
-    group.add_argument('--infer-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus'], help='ProxyStore backend to use with "infer" topic')
-    group.add_argument('--train-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus'], help='ProxyStore backend to use with "train" topic')
+    group.add_argument('--infer-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus', 'multi'], help='ProxyStore backend to use with "infer" topic')
+    group.add_argument('--train-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus', 'multi'], help='ProxyStore backend to use with "train" topic')
     group.add_argument('--ps-threshold', default=10000, type=int, help='Min size in bytes for transferring objects via ProxyStore')
     group.add_argument('--ps-file-dir', default=None, help='Filesystem directory to use with the ProxyStore file backend')
     group.add_argument('--ps-globus-config', default=None, help='Globus Endpoint config file to use with the ProxyStore Globus backend')
+    group.add_argument('--ps-multi-config', default=None, help='MultiStore config file to use with the ProxyStore MultiStore backend')
 
     # Configuration for optional Parsl backend
     group = parser.add_argument_group(title='Parsl', description='Settings related to Parsl')
@@ -578,6 +583,26 @@ if __name__ == '__main__':
             raise ValueError('Must specify --ps-globus-config to use the Globus ProxyStore backend')
         endpoints = GlobusEndpoints.from_json(args.ps_globus_config)
         register_store(GlobusStore(name='globus', endpoints=endpoints, stats=True, timeout=600))
+    if 'multi' in ps_backends:
+        if args.ps_multi_config is None:
+            raise ValueError('Must specify --ps-multi-config to use the Multi-store ProxyStore backend')
+        with open(args.ps_multi_config, 'r') as f:
+            endpoints = json.loads(f)
+
+        stores = {}
+        for uuid, params in endpoints.items():
+            if params['store'] == 'margo':
+                s = MargoStore(params['name'], params['interface'], params['port'])
+                stores[s] = Policy(subset_tags=params['policy-tags'])
+            elif params['store'] == 'endpoint':
+                s = EndpointStore(params['name'], endpoints=list(endpoints.keys()))
+                stores[s] = Policy(subset_tags=params['policy-tags']
+            else:
+                raise NotImplementedError(f'Store {params["store"]} has not yet been enabled for MultiStore.')
+
+        store = MultiStore("multistore", stores=stores)
+        register_store(store)
+
     if args.no_proxystore:
         ps_names = defaultdict(lambda: None)  # No proxystore for no one
     else:
