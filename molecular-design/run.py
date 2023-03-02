@@ -670,3 +670,4 @@ if __name__ == '__main__':
     for ps_backend in ps_backends:
         if ps_backend is not None:
             ps.store.get_store(ps_backend).close()
+            logging.info(f'Cleaned up proxystore with {ps_backend} backend')
