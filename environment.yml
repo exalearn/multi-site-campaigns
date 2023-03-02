@@ -37,7 +37,7 @@ dependencies:
       # Workflow tools
       - funcx_endpoint
       - colmena==0.4.*
-      - parsl==2023.1.23
+      - parsl==2023.2.27
 
       # AI frameworks
       - --extra-index-url https://download.pytorch.org/whl/cpu  # Change to proper CUDA if needed
