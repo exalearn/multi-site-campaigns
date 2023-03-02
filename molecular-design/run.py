@@ -21,6 +21,7 @@ from proxystore.store import register_store
 from proxystore.store.file import FileStore
 from proxystore.store.globus import GlobusEndpoints, GlobusStore
 from proxystore.store.redis import RedisStore
+from proxystore.store.utils import get_key
 from rdkit import Chem
 from tqdm import tqdm
 from colmena.models import Result
@@ -139,6 +140,7 @@ class Thinker(BaseThinker):
         # Get the initial database
         self.database = database
         self.logger.info(f'Populated an initial database of {len(self.database)} entries')
+        self.train_data_proxy_key = None  # Will be used later
 
         # Get the target database size
         self.n_to_evaluate = n_to_evaluate
@@ -277,17 +279,24 @@ class Thinker(BaseThinker):
         self.update_in_progress.set()
         self.num_training_complete = 0
 
-        for mid, model in enumerate(self.mpnns):
-            # Make the database
-            train_data = dict(
-                (d.identifier['smiles'], d.oxidation_potential[self.property_name])
-                for d in self.database
-                if self.property_name in d.oxidation_potential
-            )
+        # Make the database
+        train_data = dict(
+            (d.identifier['smiles'], d.oxidation_potential[self.property_name])
+            for d in self.database
+            if self.property_name in d.oxidation_potential
+        )
 
-            # Submit it to run
+        # Proxy it
+        ps_name = self.ps_names['train']
+        if ps_name is not None:
+            train_data_proxy = ps.store.get_store(ps_name).proxy(train_data)
+            self.train_data_proxy_key = get_key(train_data_proxy)
+        else:
+            train_data_proxy = train_data  # No proxy
+
+        for mid, model in enumerate(self.mpnns):
             self.queues.send_inputs(model.get_config(),
-                                    train_data,
+                                    train_data_proxy,
                                     method='retrain_mpnn',
                                     topic='train',
                                     task_info={'model_id': mid},
@@ -327,6 +336,12 @@ class Thinker(BaseThinker):
         self.num_training_complete += 1
         self.logger.info(f'Processed training task. {len(self.mpnns) - self.num_training_complete} models left to go')
 
+        # If all done, evict the training set
+        ps_name = self.ps_names['train']
+        if ps_name is not None and len(self.mpnns) == self.num_training_complete:
+            ps.store.get_store(ps_name).evict(self.train_data_proxy_key)
+            self.logger.info('All training completed. Evicted training set')
+
     @event_responder(event_name='start_inference')
     def launch_inference(self):
         """Submit inference tasks for the yet-unlabelled samples"""
@@ -360,7 +375,7 @@ class Thinker(BaseThinker):
                 if ps_name is None:
                     self.inference_limiter.acquire()
 
-                self.queues.send_inputs([model_msg_proxy], chunk_msg,
+                self.queues.send_inputs(model_msg_proxy, chunk_msg,
                                         topic='infer', method='evaluate_mpnn',
                                         keep_inputs=False,
                                         task_info={'chunk_id': cid, 'chunk_size': len(chunk), 'model_id': mid})
@@ -503,7 +518,7 @@ if __name__ == '__main__':
     # Load in the models, initial dataset, agent and search space
     models = [
         tf.keras.models.load_model(args.mpnn_model_path, custom_objects=custom_objects)
-        for path in tqdm(args.model_path, desc='Loading models')
+        for path in tqdm(range(args.model_count), desc='Loading models')
     ]
 
     # Read in the training set
@@ -586,7 +601,7 @@ if __name__ == '__main__':
     my_evaluate_mpnn = partial(evaluate_mpnn, batch_size=128)
     my_evaluate_mpnn = update_wrapper(my_evaluate_mpnn, evaluate_mpnn)
 
-    my_retrain_mpnn = partial(retrain_mpnn, num_epochs=args.num_epochs, learning_rate=args.learning_rate, bootstrap=True, timeout=2700)
+    my_retrain_mpnn = partial(retrain_mpnn, num_epochs=args.num_epochs, learning_rate=args.learning_rate, timeout=2700)
     my_retrain_mpnn = update_wrapper(my_retrain_mpnn, retrain_mpnn)
 
     my_run_simulation = partial(run_simulation, n_nodes=args.nodes_per_task, spec=args.qc_specification)
