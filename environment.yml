@@ -37,7 +37,7 @@ dependencies:
       # Workflow tools
       - funcx_endpoint
       - colmena==0.4.*
-      - parsl==2023.2.13
+      - parsl==2023.2.27
 
       # AI frameworks
       - --extra-index-url https://download.pytorch.org/whl/cpu  # Change to proper CUDA if needed
@@ -51,6 +51,7 @@ dependencies:
 
       # Dependencies for molecular design app
       - -e molecular-design
+      - git+https://github.com/exalearn/nfp.git@gc_updates
       - ase==3.22.1
       - python-git-info
       - flatten-dict
