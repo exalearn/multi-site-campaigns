@@ -1,9 +1,10 @@
 #! /bin/bash
-search_space=../data/MOS-search.csv
+search_space=../data/moldesign/search-space/MOS-search.csv
 
 # Get the MPNN models
-mpnn_dir=../data/xtb-models
-mpnn_files=$(find $mpnn_dir -name best_model.h5 | sort | tail -n 8)
+data_dir=../data/moldesign/
+mpnn_file=$data_dir/initial-model/networks/gpu_b16_n256_Rsum_cbd46e/model.h5
+
 
 # Relevant endpoints
 #  b9c5db67-cc17-4708-be97-5274443d789a: Debug queue, one node, flat memory
@@ -13,9 +14,11 @@ mpnn_files=$(find $mpnn_dir -name best_model.h5 | sort | tail -n 8)
 python run.py \
        --ml-endpoint de92a1ac-4118-48a2-90ac-f43a59298634 \
        --qc-endpoint b9c5db67-cc17-4708-be97-5274443d789a \
-       --training-set $mpnn_dir/records.json \
-       --retrain-from-scratch \
-       --mpnn-model-files $mpnn_files \
+       --redisport 7485 \
+       --training-set $data_dir/training-data.json \
+       --mpnn-model-path $mpnn_file \
+       --model-count 8 \
+       --num-epochs 128 \
        --search-space $search_space \
        --infer-ps-backend redis \
        --train-ps-backend redis \
@@ -24,7 +27,8 @@ python run.py \
        --ps-globus-config globus_config.json \
        --num-qc-workers 8 \
        --retrain-frequency 1 \
-       --molecules-per-ml-task 100000 \
-       --search-size 256 \
+       --molecules-per-ml-task 50000 \
+       --search-size 512 \
+       --ps-threshold 10000 \
        --use-parsl \
        --no-proxystore

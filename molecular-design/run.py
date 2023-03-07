@@ -173,7 +173,7 @@ class Thinker(BaseThinker):
         self.ready_models = Queue()
         self.num_training_complete = 0  # Tracks when we are done with training all models
         self.inference_batch = 0
-        self.inference_limiter = Semaphore(40)  # Maximum number of inference tasks to send at once (only used without proxystore)
+        self.inference_limiter = Semaphore(20)  # Maximum number of inference tasks to send at once (only used without proxystore)
 
         # Start with training
         self.start_training.set()
@@ -347,10 +347,6 @@ class Thinker(BaseThinker):
         """Submit inference tasks for the yet-unlabelled samples"""
 
         self.logger.info('Beginning to submit inference tasks')
-        # Make a folder for the models
-        model_folder = self.output_dir.joinpath('models')
-        model_folder.mkdir(exist_ok=True)
-
         # Get the name of the proxy store
         ps_name = self.ps_names['infer']
 
