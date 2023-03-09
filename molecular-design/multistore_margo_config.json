@@ -1,0 +1,24 @@
+{
+	"a767860f-1753-4633-b13d-82bfee78e8d3":
+	{
+		"name": "theta-colmena",
+		"store": "margo",
+		"interface": "ib0",
+		"port": 5000
+	},
+	"1ad502dc-646e-4a12-b642-86bb1fb15ed8":
+	{
+		"name": "colmena-1",
+		"store": "endpoint"
+	},
+	"1c65f2b0-e63d-4537-85a9-ddde989f16e8":
+	{
+		"name": "colmena-2",
+		"store": "endpoint"
+	},
+	"30f87d0a-9617-4345-b774-537ff90bb0da":
+	{
+		"name": "colmena-3",
+		"store": "endpoint"
+	}
+}
