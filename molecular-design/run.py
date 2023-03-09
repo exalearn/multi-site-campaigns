@@ -23,7 +23,7 @@ from proxystore.store.globus import GlobusEndpoints, GlobusStore
 from proxystore.store.redis import RedisStore
 from proxystore.store.multi import MultiStore
 from proxystore.store.multi import Policy
-from proxystore.store.dim.margo import MargoStore
+from proxystore.store.dim.zmq import ZeroMQStore
 from proxystore.store.endpoint import EndpointStore
 from rdkit import Chem
 from tqdm import tqdm
@@ -591,12 +591,12 @@ if __name__ == '__main__':
 
         stores = {}
         for uuid, params in endpoints.items():
-            if params['store'] == 'margo':
-                s = MargoStore(params['name'], params['interface'], params['port'])
+            if params['store'] == 'zmq':
+                s = ZeroMQStore(params['name'], params['interface'], params['port'])
                 stores[s] = Policy(subset_tags=params['policy-tags'])
             elif params['store'] == 'endpoint':
                 s = EndpointStore(params['name'], endpoints=list(endpoints.keys()))
-                stores[s] = Policy(subset_tags=params['policy-tags']
+                stores[s] = Policy(subset_tags=params['policy-tags'])
             else:
                 raise NotImplementedError(f'Store {params["store"]} has not yet been enabled for MultiStore.')
 
