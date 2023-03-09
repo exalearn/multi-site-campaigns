@@ -1,0 +1,59 @@
+# Environment for systems with CUDA 11.6
+name: multisite
+channels:
+  - defaults
+  - psi4
+  - conda-forge
+dependencies:
+  # Core dependencies for Colmena
+  - python==3.9.*
+  - redis==5.0.3
+  - redis-py==3.4.1
+  - jupyterlab
+  - pytest
+  - flake8
+  - pip
+
+  # Dependencies from the molecular design app
+  - matplotlib==3.5.*
+  - openbabel==3.1.*
+  - geometric==0.9.*
+  - qcengine==0.23.0
+  - pyyaml < 6
+  - rdkit==2022.09.4
+  - py-cpuinfo<6
+  - msgpack-python==1.*
+  - xtb-python
+  - psutil
+  - tqdm
+
+  # Requirements for the surrogate tuning app
+  - psi4==1.6.1*
+  - pandas==1.*
+
+  # Pip packages for all of them
+  - pip:
+      # Workflow tools
+      - funcx_endpoint
+      - colmena==0.4.*
+      - parsl==2023.1.23
+
+      # AI frameworks
+      - --extra-index-url https://download.pytorch.org/whl/cu116
+      - -f https://data.pyg.org/whl/torch-1.12.0+cu116.html
+      - tensorflow==2.8
+      - torch==1.12.0
+      - torch-scatter==2.0.*
+      - torch-sparse==0.6.*
+      - torch-geometric==2.1.*
+      - torch-cluster==1.6.*
+
+      # Dependencies for molecular design app
+      - -e ../molecular-design
+      - git+https://github.com/exalearn/nfp.git@gc_updates
+      - ase==3.22.1
+      - python-git-info
+      - flatten-dict
+
+      # Dependencies for the surrogate finetuning
+      - -e ../finetuning-surrogates
