@@ -11,6 +11,10 @@ We experiment a few different aspects of multi-site campaigns:
 1. _Steering policies_ that control how tasks are executed across different resources
 1. _Data transportation system_ that move large inputs or results between compute resources
 
+The copy of this repository as of our HCW'23 paper and all data used in that study are 
+[available on the Materials Data Facility.](https://acdc.alcf.anl.gov/mdf/detail/multiresource_ai_v2.1/)
+
+
 ## Organization
 
 Our study includes two major components
