@@ -1,4 +1,4 @@
-# Steering Computaitonal Campaigns across Multiple, Hetereogenous Systems
+# Steering Computational Campaigns across Multiple, Hetereogenous Systems
 
 This repository contains the software used to evaluate the performance of different
 systems for executing a computational campaigns across multiple computing sites with different hardware.
