@@ -1,0 +1,17 @@
+{
+	"a767860f-1753-4633-b13d-82bfee78e8d3":
+	{
+		"name": "theta",
+		"store": "zmq",
+		"interface": "eth2",
+		"port": 6200,
+		"policy-tags": ["simulate"]
+	},
+	"d666a18e-689f-46aa-b5cb-49163fd9018f":
+	{
+		"name": "cc",
+		"store": "endpoint",
+		"other_endpoints": ["1c65f2b0-e63d-4537-85a9-ddde989f16e8", "30f87d0a-9617-4345-b774-537ff90bb0da"],
+		"policy-tags": ["train", "infer"]
+	}
+}
