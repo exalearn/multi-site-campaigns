@@ -40,8 +40,9 @@ conda env create --file environment.yml
 You may need to modify the environments to install versions of Tensorflow optimized for your hardware.
 By default, we install the `tensorflow-cpu` as we do not assume CUDA is available on a system.
 
-- _NVIDIA GPUs_: Change the `tensorflow-cpu` to `tensorflow`.
+- _NVIDIA GPUs_: Change the `tensorflow-cpu` to `tensorflow`. Change the paths to the package indicies for PyTorch and PyG to those for your CUDA version.
 
+See the [`envs`](./envs) directory for examples.
 
 ## Preparing for a Multi-site Run
 

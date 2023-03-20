@@ -25,6 +25,7 @@ from proxystore.store.multi import MultiStore
 from proxystore.store.multi import Policy
 from proxystore.store.dim.zmq import ZeroMQStore
 from proxystore.store.endpoint import EndpointStore
+from proxystore.store.utils import get_key
 from rdkit import Chem
 from tqdm import tqdm
 from colmena.models import Result
@@ -33,12 +34,12 @@ from colmena.thinker import BaseThinker, result_processor, event_responder, task
 from colmena.thinker.resources import ResourceCounter
 from qcelemental.models import OptimizationResult, AtomicResult
 
-from moldesign.score.mpnn import evaluate_mpnn, update_mpnn, retrain_mpnn, MPNNMessage, custom_objects
+from moldesign.score.nfp import evaluate_mpnn, retrain_mpnn, NFPMessage, custom_objects
 from moldesign.store.models import MoleculeData
 from moldesign.store.recipes import apply_recipes
 from moldesign.utils import get_platform_info
 
-from config import theta_debug_and_venti as make_config
+from conf_cc import theta_debug_and_chameleon as make_config
 
 
 def run_simulation(smiles: str, n_nodes: int, spec: str = 'small_basis') -> Tuple[List[OptimizationResult], List[AtomicResult]]:
@@ -93,15 +94,16 @@ def _get_proxy_stats(obj: Any, result: Result):
             stats = dict((k, asdict(v)) for k, v in stats.items())
             result.task_info['proxy_stats'] = stats
 
+
 class Thinker(BaseThinker):
     """ML-enhanced optimization loop for molecular design"""
 
-    def __init__(self, queues: RedisQueues,
+    def __init__(self,
+                 queues: RedisQueues,
                  database: List[MoleculeData],
                  search_space: Path,
                  n_to_evaluate: int,
                  n_complete_before_retrain: int,
-                 retrain_from_initial: bool,
                  mpnns: List[tf.keras.Model],
                  inference_chunk_size: int,
                  num_qc_workers: int,
@@ -116,9 +118,8 @@ class Thinker(BaseThinker):
             database: Link to the MongoDB instance used to store results
             search_space: Path to a search space of molecules to evaluate
             n_complete_before_retrain: Number of simulations to complete before retraining
-            retrain_from_initial: Whether to update the model or retrain it from initial weights
             mpnns: List of MPNNs to use for selecting samples
-            output_dir:
+            output_dir: Directory in which to write output results
             pause_during_update: Whether to stop submitting tasks while task list is updating
             ps_names: mapping of topic to proxystore backend to use (or None if not using ProxyStore)
         """
@@ -128,7 +129,6 @@ class Thinker(BaseThinker):
         self.inference_chunk_size = inference_chunk_size
         self.n_complete_before_retrain = n_complete_before_retrain
         self.n_evaluated = 0
-        self.retrain_from_initial = retrain_from_initial
         self.mpnns = mpnns.copy()
         self.output_dir = Path(output_dir)
         self.beta = beta
@@ -144,6 +144,7 @@ class Thinker(BaseThinker):
         # Get the initial database
         self.database = database
         self.logger.info(f'Populated an initial database of {len(self.database)} entries')
+        self.train_data_proxy_key = None  # Will be used later
 
         # Get the target database size
         self.n_to_evaluate = n_to_evaluate
@@ -161,7 +162,7 @@ class Thinker(BaseThinker):
         inference_msgs = [chunk['dict'].tolist() for chunk in self.inference_chunks]
         if self.ps_names['infer'] is not None:
             keys = [f'search-{mid}' for mid in range(len(inference_msgs))]
-            self.inference_proxies = ps.store.get_store(self.ps_names['infer']).proxy_batch(inference_msgs)
+            self.inference_proxies = ps.store.get_store(self.ps_names['infer']).proxy_batch(inference_msgs, subset_tags=['infer'])
         else:
             self.inference_proxies = inference_msgs  # No proxies, just send the message as-is
 
@@ -176,19 +177,16 @@ class Thinker(BaseThinker):
         self.ready_models = Queue()
         self.num_training_complete = 0  # Tracks when we are done with training all models
         self.inference_batch = 0
-        self.inference_limiter = Semaphore(16)  # Maximum number of inference tasks to send at once (only used with out proxystore)
+        self.inference_limiter = Semaphore(20)  # Maximum number of inference tasks to send at once (only used without proxystore)
 
-        # Start with inference. Push all models immediately to the queue after triggering inference engine
-        self.start_inference.set()
-        for mpnn in self.mpnns:
-            self.ready_models.put(mpnn)
+        # Start with training
+        self.start_training.set()
 
         # Allocate all nodes that are under controlled use to simulation
         self.rec.reallocate(None, 'simulation', 'all')
 
     @task_submitter(task_type='simulation')
     def submit_qc(self):
-
         # Wait for the first set of tasks to be available
         self.task_queue_ready.wait()
 
@@ -239,6 +237,7 @@ class Thinker(BaseThinker):
             self.logger.info(f'{self.n_complete_before_retrain - self.n_evaluated % self.n_complete_before_retrain} results needed until we re-train again')
 
             # Store the data in a molecule data object
+            self.logger.debug(f'The proxy has been resolved {result.value}')
             data = MoleculeData.from_identifier(smiles=smiles)
             opt_records, hess_records = result.value
             for r in opt_records:
@@ -272,7 +271,7 @@ class Thinker(BaseThinker):
         # Write out the result to disk
         _get_proxy_stats(proxy, result)
         with open(self.output_dir.joinpath('simulation-results.json'), 'a') as fp:
-            print(result.json(exclude={'value'}), file=fp)
+            print(result.json(exclude={'value', 'proxystore_kwargs'}), file=fp)
         self.logger.info(f'Processed simulation task.')
 
     @event_responder(event_name='start_training')
@@ -285,33 +284,29 @@ class Thinker(BaseThinker):
         self.update_in_progress.set()
         self.num_training_complete = 0
 
-        # Save the models as pickle-able messages
-        model_msgs = [MPNNMessage(model) for model in self.mpnns]
+        # Make the database
+        train_data = dict(
+            (d.identifier['smiles'], d.oxidation_potential[self.property_name])
+            for d in self.database
+            if self.property_name in d.oxidation_potential
+        )
 
-        # If desired store them as proxies in a large batch
-        if self.ps_names['train'] is not None:
-            keys = [f'model-{mid}' for mid in range(len(self.mpnns))]
-            model_msgs = ps.store.get_store(self.ps_names['train']).proxy_batch(model_msgs)
+        # Proxy it
+        ps_name = self.ps_names['train']
+        if ps_name is not None:
+            train_data_proxy = ps.store.get_store(ps_name).proxy(train_data, subset_tags=['train'])
+            self.train_data_proxy_key = get_key(train_data_proxy)
+        else:
+            train_data_proxy = train_data  # No proxy
 
-        for mid, (model, model_msg) in enumerate(zip(self.mpnns, model_msgs)):
-            # Make the database
-            train_data = dict(
-                (d.identifier['smiles'], d.oxidation_potential[self.property_name])
-                for d in self.database
-                if self.property_name in d.oxidation_potential
-            )
-
-            # Make the MPNN message
-            if self.retrain_from_initial:
-                self.queues.send_inputs(model.get_config(), train_data, method='retrain_mpnn', topic='train',
-                                        task_info={'model_id': mid},
-                                        keep_inputs=False,
-                                        input_kwargs={'random_state': mid})
-            else:
-                self.queues.send_inputs(model_msg, train_data, method='update_mpnn', topic='train',
-                                        task_info={'model_id': mid},  # 'molecules': list()
-                                        keep_inputs=False,
-                                        input_kwargs={'random_state': mid})
+        for mid, model in enumerate(self.mpnns):
+            self.queues.send_inputs(model.get_config(),
+                                    train_data_proxy,
+                                    method='retrain_mpnn',
+                                    topic='train',
+                                    task_info={'model_id': mid},
+                                    keep_inputs=False,
+                                    input_kwargs={'random_state': mid})
             self.logger.info(f'Submitted model {mid} to train with {len(train_data)} entries')
 
     @result_processor(topic='train')
@@ -340,21 +335,23 @@ class Thinker(BaseThinker):
         # Save results to disk
         _get_proxy_stats(proxy, result)
         with open(self.output_dir.joinpath('training-results.json'), 'a') as fp:
-            print(result.json(exclude={'inputs', 'value'}), file=fp)
+            print(result.json(exclude={'inputs', 'value', 'proxystore_kwargs'}), file=fp)
 
         # Mark that a model has finished training and trigger inference if all done
         self.num_training_complete += 1
         self.logger.info(f'Processed training task. {len(self.mpnns) - self.num_training_complete} models left to go')
+
+        # If all done, evict the training set
+        ps_name = self.ps_names['train']
+        if ps_name is not None and len(self.mpnns) == self.num_training_complete:
+            ps.store.get_store(ps_name).evict(self.train_data_proxy_key)
+            self.logger.info('All training completed. Evicted training set')
 
     @event_responder(event_name='start_inference')
     def launch_inference(self):
         """Submit inference tasks for the yet-unlabelled samples"""
 
         self.logger.info('Beginning to submit inference tasks')
-        # Make a folder for the models
-        model_folder = self.output_dir.joinpath('models')
-        model_folder.mkdir(exist_ok=True)
-
         # Get the name of the proxy store
         ps_name = self.ps_names['infer']
 
@@ -365,11 +362,11 @@ class Thinker(BaseThinker):
             model = self.ready_models.get()
 
             # Convert it to a pickle-able message
-            model_msg = MPNNMessage(model)
+            model_msg = NFPMessage(model)
 
             # Proxy it once, to be used by all inference tasks
             if ps_name is not None:
-                model_msg_proxy = ps.store.get_store(ps_name).proxy(model_msg)
+                model_msg_proxy = ps.store.get_store(ps_name).proxy(model_msg, subset_tags=['infer'])
             else:
                 model_msg_proxy = model_msg  # No proxy
 
@@ -379,7 +376,7 @@ class Thinker(BaseThinker):
                 if ps_name is None:
                     self.inference_limiter.acquire()
 
-                self.queues.send_inputs([model_msg_proxy], chunk_msg,
+                self.queues.send_inputs(model_msg_proxy, chunk_msg,
                                         topic='infer', method='evaluate_mpnn',
                                         keep_inputs=False,
                                         task_info={'chunk_id': cid, 'chunk_size': len(chunk), 'model_id': mid})
@@ -416,7 +413,7 @@ class Thinker(BaseThinker):
             # Save the inference information to disk
             _get_proxy_stats(proxy, result)
             with open(self.output_dir.joinpath('inference-results.json'), 'a') as fp:
-                print(result.json(exclude={'value'}), file=fp)
+                print(result.json(exclude={'value', 'proxystore_kwargs'}), file=fp)
 
             self.logger.info(f'Processed inference task {i + 1}/{n_tasks}')
 
@@ -487,7 +484,8 @@ if __name__ == '__main__':
     # Problem configuration
     group = parser.add_argument_group(title='Problem Definition', description='Defining the search space, models and optimizers-related settings')
     group.add_argument('--qc-specification', default='xtb', choices=['xtb'], help='Which level of quantum chemistry to run')
-    group.add_argument('--mpnn-model-files', nargs="+", help='Path to the MPNN h5 files', required=True)
+    group.add_argument('--mpnn-model-path', help='Path to the MPNN h5 files', required=True)
+    group.add_argument('--model-count', default=8, help='Number of models to use in the ensemble', type=int)
     group.add_argument('--training-set', help='Path to the molecules used to train the initial models', required=True)
     group.add_argument('--search-space', help='Path to molecules to be screened', required=True)
     group.add_argument("--search-size", default=500, type=int, help="Number of new molecules to evaluate during this search")
@@ -497,14 +495,13 @@ if __name__ == '__main__':
 
     # Parameters related to model retraining
     group = parser.add_argument_group(title='Model Training', description='Settings related to model retraining')
-    group.add_argument('--retrain-from-scratch', action='store_true', help='Whether to re-initialize weights before training')
     group.add_argument("--learning-rate", default=1e-3, help="Learning rate for re-training the models", type=float)
     group.add_argument('--num-epochs', default=512, type=int, help='Maximum number of epochs for the model training')
 
     # Parameters related to ProxyStore
     group = parser.add_argument_group(title='ProxyStore', description='Settings related to ProxyStore')
     group.add_argument('--no-proxystore', action='store_true', help='Turn off ProxyStore')
-    group.add_argument('--simulate-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus'], help='ProxyStore backend to use with "simulate" topic')
+    group.add_argument('--simulate-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus', 'multi'], help='ProxyStore backend to use with "simulate" topic')
     group.add_argument('--infer-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus', 'multi'], help='ProxyStore backend to use with "infer" topic')
     group.add_argument('--train-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus', 'multi'], help='ProxyStore backend to use with "train" topic')
     group.add_argument('--ps-threshold', default=10000, type=int, help='Min size in bytes for transferring objects via ProxyStore')
@@ -521,7 +518,10 @@ if __name__ == '__main__':
     run_params = args.__dict__
 
     # Load in the models, initial dataset, agent and search space
-    models = [tf.keras.models.load_model(path, custom_objects=custom_objects) for path in tqdm(args.mpnn_model_files, desc='Loading models')]
+    models = [
+        tf.keras.models.load_model(args.mpnn_model_path, custom_objects=custom_objects)
+        for path in tqdm(range(args.model_count), desc='Loading models')
+    ]
 
     # Read in the training set
     with open(args.training_set) as fp:
@@ -549,6 +549,7 @@ if __name__ == '__main__':
     handlers = [logging.FileHandler(os.path.join(out_dir, 'runtime.log')),
                 logging.StreamHandler(sys.stdout)]
 
+
     class ParslFilter(logging.Filter):
         """Filter out Parsl debug logs"""
 
@@ -559,7 +560,6 @@ if __name__ == '__main__':
     for h in handlers:
         h.addFilter(ParslFilter())
 
-    
     logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                         level=logging.INFO, handlers=handlers)
     logging.info(f'Run directory: {out_dir}')
@@ -587,15 +587,20 @@ if __name__ == '__main__':
         if args.ps_multi_config is None:
             raise ValueError('Must specify --ps-multi-config to use the Multi-store ProxyStore backend')
         with open(args.ps_multi_config, 'r') as f:
-            endpoints = json.loads(f)
+            endpoints = json.load(f)
 
         stores = {}
         for uuid, params in endpoints.items():
             if params['store'] == 'zmq':
-                s = ZeroMQStore(params['name'], params['interface'], params['port'])
+                s = ZeroMQStore(params['name'], interface=params['interface'], port=params['port'])
                 stores[s] = Policy(subset_tags=params['policy-tags'])
             elif params['store'] == 'endpoint':
-                s = EndpointStore(params['name'], endpoints=list(endpoints.keys()))
+                params['other_endpoints'].extend(list(endpoints.keys()))
+                s = EndpointStore(params['name'], endpoints=params['other_endpoints'])
+                stores[s] = Policy(subset_tags=params['policy-tags'])
+            elif params['store'] == 'globus':
+                endpoints = GlobusEndpoints.from_json(params['config'])
+                s = GlobusStore(name='globus', endpoints=endpoints, stats=True, timeout=600)
                 stores[s] = Policy(subset_tags=params['policy-tags'])
             else:
                 raise NotImplementedError(f'Store {params["store"]} has not yet been enabled for MultiStore.')
@@ -606,7 +611,7 @@ if __name__ == '__main__':
     if args.no_proxystore:
         ps_names = defaultdict(lambda: None)  # No proxystore for no one
     else:
-        ps_names = {'simulate': args.simulate_ps_backend, 'infer': args.infer_ps_backend, 'train': args.train_ps_backend}
+        ps_names = {'simulate': 'multistore', 'infer': 'multistore', 'train': 'multistore'} #{'simulate': args.simulate_ps_backend, 'infer': args.infer_ps_backend, 'train': args.train_ps_backend}
 
     # Connect to the redis server
     queues = RedisQueues(hostname=args.redishost,
@@ -620,13 +625,10 @@ if __name__ == '__main__':
 
     # Apply wrappers to functions to affix static settings
     #  Update wrapper changes the __name__ field, which is used by the Method Server
-    my_evaluate_mpnn = partial(evaluate_mpnn, batch_size=128, cache=True)
+    my_evaluate_mpnn = partial(evaluate_mpnn, batch_size=128)
     my_evaluate_mpnn = update_wrapper(my_evaluate_mpnn, evaluate_mpnn)
 
-    my_update_mpnn = partial(update_mpnn, num_epochs=args.num_epochs, learning_rate=args.learning_rate, bootstrap=True, timeout=2700)
-    my_update_mpnn = update_wrapper(my_update_mpnn, update_mpnn)
-
-    my_retrain_mpnn = partial(retrain_mpnn, num_epochs=args.num_epochs, learning_rate=args.learning_rate, bootstrap=True, timeout=2700)
+    my_retrain_mpnn = partial(retrain_mpnn, num_epochs=args.num_epochs, learning_rate=args.learning_rate, timeout=2700)
     my_retrain_mpnn = update_wrapper(my_retrain_mpnn, retrain_mpnn)
 
     my_run_simulation = partial(run_simulation, n_nodes=args.nodes_per_task, spec=args.qc_specification)
@@ -640,7 +642,7 @@ if __name__ == '__main__':
         config = make_config(out_dir)
 
         # Assign tasks to the appropriate executor
-        methods = [(f, {'executors': ['gpu']}) for f in [my_evaluate_mpnn, my_update_mpnn, my_retrain_mpnn]]
+        methods = [(f, {'executors': ['gpu']}) for f in [my_evaluate_mpnn, my_retrain_mpnn]]
         methods.append((my_run_simulation, {'executors': ['cpu']}))
 
         # Create the server
@@ -650,25 +652,26 @@ if __name__ == '__main__':
         from funcx import FuncXClient
 
         fx_client = FuncXClient()
-        task_map = dict((f, args.ml_endpoint) for f in [my_evaluate_mpnn, my_update_mpnn, my_retrain_mpnn])
+        task_map = dict((f, args.ml_endpoint) for f in [my_evaluate_mpnn, my_retrain_mpnn])
         task_map[my_run_simulation] = args.qc_endpoint
         doer = FuncXTaskServer(task_map, fx_client, queues)
 
     # Configure the "thinker" application
-    thinker = Thinker(queues,
-                      database,
-                      args.search_space,
-                      args.search_size,
-                      args.retrain_frequency,
-                      args.retrain_from_scratch,
-                      models,
-                      args.molecules_per_ml_task,
-                      args.num_qc_workers,
-                      args.qc_specification,
-                      out_dir,
-                      args.beta,
-                      args.pause_during_update,
-                      ps_names)
+    thinker = Thinker(
+        queues=queues,
+        database=database,
+        search_space=args.search_space,
+        n_to_evaluate=args.search_size,
+        n_complete_before_retrain=args.retrain_frequency,
+        mpnns=models,
+        inference_chunk_size=args.molecules_per_ml_task,
+        num_qc_workers=args.num_qc_workers,
+        qc_specification=args.qc_specification,
+        output_dir=out_dir,
+        beta=args.beta,
+        pause_during_update=args.pause_during_update,
+        ps_names=ps_names
+    )
     logging.info('Created the method server and task generator')
 
     try:
@@ -694,3 +697,4 @@ if __name__ == '__main__':
     for ps_backend in ps_backends:
         if ps_backend is not None:
             ps.store.get_store(ps_backend).close()
+            logging.info(f'Cleaned up proxystore with {ps_backend} backend')

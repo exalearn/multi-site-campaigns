@@ -1,5 +1,4 @@
-# Environment with CPU-only dependencies
-#  Tensorflow and PyTorch deps should change to match your GPU
+# Environment for systems with CUDA 11.6
 name: multisite
 channels:
   - defaults
@@ -37,12 +36,12 @@ dependencies:
       # Workflow tools
       - funcx_endpoint
       - colmena==0.4.*
-      - parsl==2023.2.27
+      - parsl==2023.1.23
 
       # AI frameworks
-      - --extra-index-url https://download.pytorch.org/whl/cpu  # Change to proper CUDA if needed
-      - -f https://data.pyg.org/whl/torch-1.12.0+cpu.html  # Change to CUDA version if needed
-      - tensorflow-cpu==2.8
+      - --extra-index-url https://download.pytorch.org/whl/cu116
+      - -f https://data.pyg.org/whl/torch-1.12.0+cu116.html
+      - tensorflow==2.8
       - torch==1.12.0
       - torch-scatter==2.0.*
       - torch-sparse==0.6.*
@@ -50,11 +49,11 @@ dependencies:
       - torch-cluster==1.6.*
 
       # Dependencies for molecular design app
-      - -e molecular-design
+      - -e ../molecular-design
       - git+https://github.com/exalearn/nfp.git@gc_updates
       - ase==3.22.1
       - python-git-info
       - flatten-dict
 
       # Dependencies for the surrogate finetuning
-      - -e finetuning-surrogates
+      - -e ../finetuning-surrogates
