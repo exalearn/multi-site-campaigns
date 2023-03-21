@@ -1,4 +1,4 @@
-# Steering Computaitonal Campaigns across Multiple, Hetereogenous Systems
+# Steering Computational Campaigns across Multiple, Hetereogenous Systems
 
 This repository contains the software used to evaluate the performance of different
 systems for executing a computational campaigns across multiple computing sites with different hardware.
@@ -10,6 +10,10 @@ We experiment a few different aspects of multi-site campaigns:
 1. _Workflow engine_ that delegates tasks across distributed resources
 1. _Steering policies_ that control how tasks are executed across different resources
 1. _Data transportation system_ that move large inputs or results between compute resources
+
+The copy of this repository as of our HCW'23 paper and all data used in that study are 
+[available on the Materials Data Facility.](https://acdc.alcf.anl.gov/mdf/detail/multiresource_ai_v2.1/)
+
 
 ## Organization
 
