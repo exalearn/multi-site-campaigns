@@ -501,9 +501,9 @@ if __name__ == '__main__':
     # Parameters related to ProxyStore
     group = parser.add_argument_group(title='ProxyStore', description='Settings related to ProxyStore')
     group.add_argument('--no-proxystore', action='store_true', help='Turn off ProxyStore')
-    group.add_argument('--simulate-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus', 'multi'], help='ProxyStore backend to use with "simulate" topic')
-    group.add_argument('--infer-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus', 'multi'], help='ProxyStore backend to use with "infer" topic')
-    group.add_argument('--train-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus', 'multi'], help='ProxyStore backend to use with "train" topic')
+    group.add_argument('--simulate-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus', 'multistore'], help='ProxyStore backend to use with "simulate" topic')
+    group.add_argument('--infer-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus', 'multistore'], help='ProxyStore backend to use with "infer" topic')
+    group.add_argument('--train-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus', 'multistore'], help='ProxyStore backend to use with "train" topic')
     group.add_argument('--ps-threshold', default=10000, type=int, help='Min size in bytes for transferring objects via ProxyStore')
     group.add_argument('--ps-file-dir', default=None, help='Filesystem directory to use with the ProxyStore file backend')
     group.add_argument('--ps-globus-config', default=None, help='Globus Endpoint config file to use with the ProxyStore Globus backend')
@@ -583,7 +583,7 @@ if __name__ == '__main__':
             raise ValueError('Must specify --ps-globus-config to use the Globus ProxyStore backend')
         endpoints = GlobusEndpoints.from_json(args.ps_globus_config)
         register_store(GlobusStore(name='globus', endpoints=endpoints, stats=True, timeout=600))
-    if 'multi' in ps_backends:
+    if 'multistore' in ps_backends:
         if args.ps_multi_config is None:
             raise ValueError('Must specify --ps-multi-config to use the Multi-store ProxyStore backend')
         with open(args.ps_multi_config, 'r') as f:
@@ -591,27 +591,30 @@ if __name__ == '__main__':
 
         stores = {}
         for uuid, params in endpoints.items():
-            if params['store'] == 'zmq':
-                s = ZeroMQStore(params['name'], interface=params['interface'], port=params['port'])
-                stores[s] = Policy(subset_tags=params['policy-tags'])
+            s = None
+
+            if params['store'] =='zmq':
+                s = ZeroMQStore(params['name'], hostname=params['host'], port=params['port'])
+            elif params['store'] == 'redis':
+                s = RedisStore(params['name'], hostname=params['host'], port=params['port'])
             elif params['store'] == 'endpoint':
                 params['other_endpoints'].extend(list(endpoints.keys()))
                 s = EndpointStore(params['name'], endpoints=params['other_endpoints'])
-                stores[s] = Policy(subset_tags=params['policy-tags'])
             elif params['store'] == 'globus':
                 endpoints = GlobusEndpoints.from_json(params['config'])
                 s = GlobusStore(name='globus', endpoints=endpoints, stats=True, timeout=600)
-                stores[s] = Policy(subset_tags=params['policy-tags'])
             else:
                 raise NotImplementedError(f'Store {params["store"]} has not yet been enabled for MultiStore.')
 
-        store = MultiStore("multistore", stores=stores)
+            stores[s] = Policy(subset_tags=params['policy-tags'])
+
+        store = MultiStore('multistore', stores=stores)
         register_store(store)
 
     if args.no_proxystore:
         ps_names = defaultdict(lambda: None)  # No proxystore for no one
     else:
-        ps_names = {'simulate': 'multistore', 'infer': 'multistore', 'train': 'multistore'} #{'simulate': args.simulate_ps_backend, 'infer': args.infer_ps_backend, 'train': args.train_ps_backend}
+        ps_names = {'simulate': 'multistore', 'infer': 'multistore', 'train': 'multistore'}
 
     # Connect to the redis server
     queues = RedisQueues(hostname=args.redishost,

@@ -1,5 +1,5 @@
 from parsl.executors import HighThroughputExecutor
-from parsl.providers import CobaltProvider, AdHocProvider
+from parsl.providers import CobaltProvider, AdHocProvider, SlurmProvider
 from parsl.addresses import address_by_hostname
 from parsl.launchers import AprunLauncher
 from parsl.channels import SSHChannel
@@ -151,16 +151,30 @@ which python
             HighThroughputExecutor(
                 address='localhost',
                 label="gpu",
-                available_accelerators=2,
-                worker_ports=(54900, 54901),  # Hard coded to match up with SSH tunnels
-                worker_logdir_root='/home/cc/multi-site-campaigns/parsl-run/logs',
-                provider=AdHocProvider(
-                    channels=[
-                        SSHChannel('129.114.109.232', username='cc', script_dir='/home/cc/multi-site-campaigns/parsl-run'),
-                        #SSHChannel('129.114.108.193', username='cc', script_dir='/home/cc/multi-site-campaigns/parsl-run'),
-                        #SSHChannel('129.114.108.216', username='cc', script_dir='/home/cc/multi-site-campaigns/parsl-run'),
-                    ],
+                available_accelerators=4,
+                worker_ports=(54882, 54883),  # Hard coded to match up with SSH tunnels
+                worker_logdir_root='/home/x-vhayot/multi-site-campaigns/parsl-run/logs',
+                provider=SlurmProvider(
+                    partition='gpu',
+                    channel=SSHChannel('128.211.133.146', username='x-vhayot', script_dir='/home/x-vhayot/multi-site-campaigns/parsl-run'),
                     worker_init='''
 # Activate conda environment
-source /home/cc/miniconda3/bin/activate /home/cc/miniconda3/envs/colmena/
+
+ssh -f -N -L 54882:localhost:54882 -L 54883:localhost:54883 x-vhayot@login06.anvil.rcac.purdue.edu
+source /home/x-vhayot/miniconda3/bin/activate /home/x-vhayot/miniconda3/envs/multisite/
 which python
+module load modtree/gpu
+module load cudnn/cuda-11.4_8.2
+''',
+                    nodes_per_block=1,
+                    init_blocks=0,
+                    min_blocks=0,
+                    max_blocks=1,
+                    cmd_timeout=300,
+                    walltime='01:30:00',
+                    scheduler_options='#SBATCH --gpus-per-node 4',
+                ),
+            )]
+    )
+
+    return config

@@ -1,15 +1,15 @@
 {
-	"a767860f-1753-4633-b13d-82bfee78e8d3":
+	"2fa45f60-509b-45aa-ae9e-72891e04698d":
 	{
 		"name": "theta",
-		"store": "zmq",
-		"interface": "eth2",
-		"port": 6200,
+		"store": "redis",
+		"host": "10.236.1.194",
+		"port": 6379,
 		"policy-tags": ["simulate"]
 	},
-	"d666a18e-689f-46aa-b5cb-49163fd9018f":
+	"ab3a7832-3770-4ebd-9598-a5c480f1a024":
 	{
-		"name": "cc",
+		"name": "anvil",
 		"store": "endpoint",
 		"other_endpoints": ["1c65f2b0-e63d-4537-85a9-ddde989f16e8", "30f87d0a-9617-4345-b774-537ff90bb0da"],
 		"policy-tags": ["train", "infer"]
