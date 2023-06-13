@@ -2,7 +2,7 @@
 
 This repository contains the software used to evaluate the performance of different
 systems for executing a computational campaigns across multiple computing sites with different hardware.
-As [better described in the associated paper](#), the need to deploy scientific workflows across multiple
+As [better described in the associated paper](https://arxiv.org/abs/2303.08803), the need to deploy scientific workflows across multiple
 sites is driven by the increasing diversity in application requirements
 and the available hardware on which to execute them.
 We experiment a few different aspects of multi-site campaigns:
