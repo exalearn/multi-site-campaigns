@@ -21,6 +21,10 @@ from proxystore.store import register_store
 from proxystore.store.file import FileStore
 from proxystore.store.globus import GlobusEndpoints, GlobusStore
 from proxystore.store.redis import RedisStore
+from proxystore.store.multi import MultiStore
+from proxystore.store.multi import Policy
+from proxystore.store.dim.zmq import ZeroMQStore
+from proxystore.store.endpoint import EndpointStore
 from proxystore.store.utils import get_key
 from rdkit import Chem
 from tqdm import tqdm
@@ -35,7 +39,7 @@ from moldesign.store.models import MoleculeData
 from moldesign.store.recipes import apply_recipes
 from moldesign.utils import get_platform_info
 
-from config import theta_debug_and_venti as make_config
+from config import theta_debug_and_chameleon as make_config
 
 
 def run_simulation(smiles: str, n_nodes: int, spec: str = 'small_basis') -> Tuple[List[OptimizationResult], List[AtomicResult]]:
@@ -158,7 +162,7 @@ class Thinker(BaseThinker):
         inference_msgs = [chunk['dict'].tolist() for chunk in self.inference_chunks]
         if self.ps_names['infer'] is not None:
             keys = [f'search-{mid}' for mid in range(len(inference_msgs))]
-            self.inference_proxies = ps.store.get_store(self.ps_names['infer']).proxy_batch(inference_msgs)
+            self.inference_proxies = ps.store.get_store(self.ps_names['infer']).proxy_batch(inference_msgs, subset_tags=['infer'])
         else:
             self.inference_proxies = inference_msgs  # No proxies, just send the message as-is
 
@@ -233,6 +237,7 @@ class Thinker(BaseThinker):
             self.logger.info(f'{self.n_complete_before_retrain - self.n_evaluated % self.n_complete_before_retrain} results needed until we re-train again')
 
             # Store the data in a molecule data object
+            self.logger.debug(f'The proxy has been resolved {result.value}')
             data = MoleculeData.from_identifier(smiles=smiles)
             opt_records, hess_records = result.value
             for r in opt_records:
@@ -266,7 +271,7 @@ class Thinker(BaseThinker):
         # Write out the result to disk
         _get_proxy_stats(proxy, result)
         with open(self.output_dir.joinpath('simulation-results.json'), 'a') as fp:
-            print(result.json(exclude={'value'}), file=fp)
+            print(result.json(exclude={'value', 'proxystore_kwargs'}), file=fp)
         self.logger.info(f'Processed simulation task.')
 
     @event_responder(event_name='start_training')
@@ -289,7 +294,7 @@ class Thinker(BaseThinker):
         # Proxy it
         ps_name = self.ps_names['train']
         if ps_name is not None:
-            train_data_proxy = ps.store.get_store(ps_name).proxy(train_data)
+            train_data_proxy = ps.store.get_store(ps_name).proxy(train_data, subset_tags=['train'])
             self.train_data_proxy_key = get_key(train_data_proxy)
         else:
             train_data_proxy = train_data  # No proxy
@@ -330,7 +335,7 @@ class Thinker(BaseThinker):
         # Save results to disk
         _get_proxy_stats(proxy, result)
         with open(self.output_dir.joinpath('training-results.json'), 'a') as fp:
-            print(result.json(exclude={'inputs', 'value'}), file=fp)
+            print(result.json(exclude={'inputs', 'value', 'proxystore_kwargs'}), file=fp)
 
         # Mark that a model has finished training and trigger inference if all done
         self.num_training_complete += 1
@@ -361,7 +366,7 @@ class Thinker(BaseThinker):
 
             # Proxy it once, to be used by all inference tasks
             if ps_name is not None:
-                model_msg_proxy = ps.store.get_store(ps_name).proxy(model_msg)
+                model_msg_proxy = ps.store.get_store(ps_name).proxy(model_msg, subset_tags=['infer'])
             else:
                 model_msg_proxy = model_msg  # No proxy
 
@@ -408,7 +413,7 @@ class Thinker(BaseThinker):
             # Save the inference information to disk
             _get_proxy_stats(proxy, result)
             with open(self.output_dir.joinpath('inference-results.json'), 'a') as fp:
-                print(result.json(exclude={'value'}), file=fp)
+                print(result.json(exclude={'value', 'proxystore_kwargs'}), file=fp)
 
             self.logger.info(f'Processed inference task {i + 1}/{n_tasks}')
 
@@ -496,12 +501,13 @@ if __name__ == '__main__':
     # Parameters related to ProxyStore
     group = parser.add_argument_group(title='ProxyStore', description='Settings related to ProxyStore')
     group.add_argument('--no-proxystore', action='store_true', help='Turn off ProxyStore')
-    group.add_argument('--simulate-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus'], help='ProxyStore backend to use with "simulate" topic')
-    group.add_argument('--infer-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus'], help='ProxyStore backend to use with "infer" topic')
-    group.add_argument('--train-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus'], help='ProxyStore backend to use with "train" topic')
+    group.add_argument('--simulate-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus', 'multistore'], help='ProxyStore backend to use with "simulate" topic')
+    group.add_argument('--infer-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus', 'multistore'], help='ProxyStore backend to use with "infer" topic')
+    group.add_argument('--train-ps-backend', default=None, choices=[None, 'redis', 'file', 'globus', 'multistore'], help='ProxyStore backend to use with "train" topic')
     group.add_argument('--ps-threshold', default=10000, type=int, help='Min size in bytes for transferring objects via ProxyStore')
     group.add_argument('--ps-file-dir', default=None, help='Filesystem directory to use with the ProxyStore file backend')
     group.add_argument('--ps-globus-config', default=None, help='Globus Endpoint config file to use with the ProxyStore Globus backend')
+    group.add_argument('--ps-multi-config', default=None, help='MultiStore config file to use with the ProxyStore MultiStore backend')
 
     # Configuration for optional Parsl backend
     group = parser.add_argument_group(title='Parsl', description='Settings related to Parsl')
@@ -577,10 +583,38 @@ if __name__ == '__main__':
             raise ValueError('Must specify --ps-globus-config to use the Globus ProxyStore backend')
         endpoints = GlobusEndpoints.from_json(args.ps_globus_config)
         register_store(GlobusStore(name='globus', endpoints=endpoints, stats=True, timeout=600))
+    if 'multistore' in ps_backends:
+        if args.ps_multi_config is None:
+            raise ValueError('Must specify --ps-multi-config to use the Multi-store ProxyStore backend')
+        with open(args.ps_multi_config, 'r') as f:
+            endpoints = json.load(f)
+
+        stores = {}
+        for uuid, params in endpoints.items():
+            s = None
+
+            if params['store'] =='zmq':
+                s = ZeroMQStore(params['name'], hostname=params['host'], port=params['port'])
+            elif params['store'] == 'redis':
+                s = RedisStore(params['name'], hostname=params['host'], port=params['port'])
+            elif params['store'] == 'endpoint':
+                params['other_endpoints'].extend(list(endpoints.keys()))
+                s = EndpointStore(params['name'], endpoints=params['other_endpoints'])
+            elif params['store'] == 'globus':
+                endpoints = GlobusEndpoints.from_json(params['config'])
+                s = GlobusStore(name='globus', endpoints=endpoints, stats=True, timeout=600)
+            else:
+                raise NotImplementedError(f'Store {params["store"]} has not yet been enabled for MultiStore.')
+
+            stores[s] = Policy(subset_tags=params['policy-tags'])
+
+        store = MultiStore('multistore', stores=stores)
+        register_store(store)
+
     if args.no_proxystore:
         ps_names = defaultdict(lambda: None)  # No proxystore for no one
     else:
-        ps_names = {'simulate': args.simulate_ps_backend, 'infer': args.infer_ps_backend, 'train': args.train_ps_backend}
+        ps_names = {'simulate': 'multistore', 'infer': 'multistore', 'train': 'multistore'}
 
     # Connect to the redis server
     queues = RedisQueues(hostname=args.redishost,

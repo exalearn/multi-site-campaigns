@@ -1,0 +1,17 @@
+{
+	"2fa45f60-509b-45aa-ae9e-72891e04698d":
+	{
+		"name": "theta",
+		"store": "zmq",
+		"interface": "eth2",
+		"port": 6200,
+		"policy-tags": ["simulate"]
+	},
+	"d666a18e-689f-46aa-b5cb-49163fd9018f":
+	{
+		"name": "cc",
+		"store": "globus",
+		"config": "/home/vhayot/multi-site-campaigns/molecular-design/globus_multistore_config.json",
+		"policy-tags": ["train", "infer"]
+	}
+}

@@ -1,0 +1,12 @@
+{
+    "dd8f59df-1213-40ac-9c74-0e64cf134589": {
+        "host_regex": "(theta.*)",
+        "endpoint_path": "/CSC249ADCD08/vhayot/globus-proxystore-scratch",
+        "local_path": "/lus/theta-fs0/projects/CSC249ADCD08/vhayot/globus-proxystore-scratch"
+    },
+    "70aa4900-c988-11ed-8cfa-f9fa098153fc" : {
+        "host_regex": "(colmena.*)",
+        "endpoint_path": "/home/cc/proxystore-scratch/",
+        "local_path": "/home/cc/proxystore-scratch/"
+    }
+}
